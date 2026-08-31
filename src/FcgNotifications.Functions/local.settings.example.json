@@ -1,0 +1,15 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
+    "RabbitMqConnection": "amqp://guest:guest@localhost:5672/",
+    "RabbitMqUserCreatedQueue": "notifications-user-created",
+    "RabbitMqPaymentProcessedQueue": "notifications-payment-processed",
+    "Smtp:Enabled": "true",
+    "Smtp:Host": "localhost",
+    "Smtp:Port": "1025",
+    "Smtp:FromAddress": "noreply@fcg.local",
+    "Smtp:FromName": "FIAP Cloud Games"
+  }
+}
