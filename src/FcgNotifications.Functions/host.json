@@ -17,11 +17,5 @@
     "rabbitMQ": {
       "prefetchCount": 20
     }
-  },
-  "retry": {
-    "strategy": "exponentialBackoff",
-    "maxRetryCount": 5,
-    "minimumInterval": "00:00:02",
-    "maximumInterval": "00:01:00"
   }
 }
