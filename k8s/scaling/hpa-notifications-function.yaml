@@ -1,0 +1,31 @@
+# Escala horizontal da funcao serverless dentro do cluster.
+#
+# Um pico de cadastros ou de compras enche as filas notifications-*; o host de Functions
+# consome em paralelo, a CPU sobe e o HPA adiciona replicas. Quando a fila esvazia, a
+# CPU cai e o HPA volta ao minimo — o mesmo comportamento elastico que o plano Elastic
+# Premium entrega na Azure.
+#
+# Escalar pela profundidade da fila (metrica externa via KEDA) e mais preciso que CPU,
+# mas exige o KEDA instalado no cluster; aqui fica a versao que roda em qualquer cluster.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: notifications-function-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: notifications-function
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      # Evita derrubar replicas no vale entre duas rajadas de mensagens.
+      stabilizationWindowSeconds: 120

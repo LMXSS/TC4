@@ -1,0 +1,41 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    plataforma: fcg
+    ambiente: local
+
+scrape_configs:
+  # Microsservicos .NET: OpenTelemetry expoe /metrics no formato Prometheus.
+  - job_name: users-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["users-api:8080"]
+        labels:
+          service: users-api
+
+  - job_name: catalog-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["catalog-api:8080"]
+        labels:
+          service: catalog-api
+
+  - job_name: payments-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["payments-api:8080"]
+        labels:
+          service: payments-api
+
+  # API Gateway: o plugin prometheus do Kong publica na porta de status.
+  - job_name: kong
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["kong:8100"]
+        labels:
+          service: kong
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

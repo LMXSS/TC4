@@ -1,39 +1,75 @@
-# Sobe a stack completa da FCG (Fase 2): RabbitMQ + Mailpit + 4 APIs.
+# Stack completa da FIAP Cloud Games — Fase 3.
 #
-# PRE-REQUISITO: as imagens fcg/*:latest precisam existir localmente.
-# Este compose NAO builda a partir do codigo-fonte: cada API vive em seu
-# proprio repositorio Git. Builde antes com:
+# Os repositorios dos microsservicos sao clonados lado a lado com este, e cada build
+# aponta para o contexto do repositorio vizinho:
 #
-#   .\build-images.ps1 -ReposRoot <pasta-que-contem-os-4-repos>
+#   D:\TechChallenge2\
+#     ├─ fcg-platform\            <- este repositorio
+#     ├─ fcg-users-api\
+#     ├─ fcg-catalog-api\
+#     ├─ fcg-payments-api\
+#     └─ fcg-notifications-function\
 #
-# ou, manualmente, na raiz de cada repo de API:
-#
-#   docker build -f Users.Api/Dockerfile -t fcg/users-api:latest .
-#
-# Depois:  docker compose up -d
+# Nenhum microsservico publica porta no host: a unica entrada e o Kong, na 8000.
+# Para alcancar o Swagger de um servico durante a depuracao, use o override:
+#   docker compose -f docker-compose.yml -f docker-compose.debug.yml up
+
+name: fcg
 
 services:
+  # ==========================================================================
+  # Infraestrutura
+  # ==========================================================================
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
     hostname: rabbitmq
     ports:
-      - "5672:5672"
       - "15672:15672"
-    environment:
-      RABBITMQ_DEFAULT_USER: guest
-      RABBITMQ_DEFAULT_PASS: guest
+    volumes:
+      # Declara as filas notifications-* e os bindings com os exchanges do MassTransit,
+      # que sao o gatilho da funcao serverless.
+      - ./rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+      - ./rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
-      interval: 15s
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 10s
       timeout: 10s
-      retries: 8
+      retries: 12
       start_period: 40s
+
+  mongo:
+    image: mongo:7.0
+    command: ["--quiet"]
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: fcg_catalog
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
   mailpit:
     image: axllent/mailpit:latest
     ports:
       - "8025:8025"
-      - "1025:1025"
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8025"]
       interval: 10s
@@ -41,11 +77,69 @@ services:
       retries: 5
       start_period: 10s
 
-  users-api:
-    image: fcg/users-api:latest
-    pull_policy: never
+  # Emula o Azure Storage exigido pelo host de Functions para triggers que nao sao HTTP.
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:latest
+    command: ["azurite", "--blobHost", "0.0.0.0", "--queueHost", "0.0.0.0", "--tableHost", "0.0.0.0", "--skipApiVersionCheck"]
+    volumes:
+      - azurite-data:/data
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "10000"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ==========================================================================
+  # API Gateway — unica porta de entrada
+  # ==========================================================================
+  kong:
+    image: kong:3.8
+    environment:
+      KONG_DATABASE: "off"
+      KONG_PROXY_LISTEN: 0.0.0.0:8000
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+      KONG_STATUS_LISTEN: 0.0.0.0:8100
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      KONG_LOG_LEVEL: notice
+      # Segredo injetado no kong.yml pelo entrypoint abaixo.
+      FCG_JWT_KEY: ${JWT_KEY:-CHANGE_ME_DEV_KEY_MIN_32_CHARS_LONG!!}
+    # Substitui o marcador __FCG_JWT_KEY__ pelo segredo real antes de o Kong ler a
+    # configuracao declarativa. O arquivo versionado nunca carrega o segredo.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >
+        sed "s|__FCG_JWT_KEY__|$$FCG_JWT_KEY|g"
+        /kong/declarative/kong.template.yml > /tmp/kong.yml &&
+        KONG_DECLARATIVE_CONFIG=/tmp/kong.yml exec /docker-entrypoint.sh kong docker-start
     ports:
-      - "5101:8080"
+      - "8000:8000"
+      - "8001:8001"
+    volumes:
+      - ./gateway/kong.yml:/kong/declarative/kong.template.yml:ro
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      users-api:
+        condition: service_started
+      catalog-api:
+        condition: service_started
+
+  # ==========================================================================
+  # Microsservicos
+  # ==========================================================================
+  users-api:
+    build:
+      context: ../fcg-users-api
+      dockerfile: Users.Api/Dockerfile
     environment:
       ASPNETCORE_ENVIRONMENT: Development
       ConnectionStrings__DefaultConnection: Data Source=/app/data/users.db
@@ -62,10 +156,9 @@ services:
         condition: service_healthy
 
   catalog-api:
-    image: fcg/catalog-api:latest
-    pull_policy: never
-    ports:
-      - "5102:8080"
+    build:
+      context: ../fcg-catalog-api
+      dockerfile: Catalog.Api/Dockerfile
     environment:
       ASPNETCORE_ENVIRONMENT: Development
       ConnectionStrings__DefaultConnection: Data Source=/app/data/catalog.db
@@ -75,17 +168,27 @@ services:
       Jwt__Key: ${JWT_KEY:-CHANGE_ME_DEV_KEY_MIN_32_CHARS_LONG!!}
       Jwt__Issuer: FCG
       Jwt__Audience: FCG
+      # Persistencia poliglota: catalogo expandido e avaliacoes no MongoDB.
+      Mongo__ConnectionString: mongodb://mongo:27017
+      Mongo__Database: fcg_catalog
+      # Cache distribuido.
+      Cache__RedisEnabled: "true"
+      Cache__RedisConnectionString: redis:6379
+      Cache__InstanceName: "fcg:catalog:"
     volumes:
       - catalog-api-data:/app/data
     depends_on:
       rabbitmq:
         condition: service_healthy
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   payments-api:
-    image: fcg/payments-api:latest
-    pull_policy: never
-    ports:
-      - "5103:8080"
+    build:
+      context: ../fcg-payments-api
+      dockerfile: Payments.Api/Dockerfile
     environment:
       ASPNETCORE_ENVIRONMENT: Development
       ConnectionStrings__DefaultConnection: Data Source=/app/data/payments.db
@@ -101,28 +204,76 @@ services:
       rabbitmq:
         condition: service_healthy
 
-  notifications-api:
-    image: fcg/notifications-api:latest
-    pull_policy: never
-    ports:
-      - "5104:8080"
+  # ==========================================================================
+  # Funcao serverless — substitui o container do NotificationsAPI da Fase 2
+  # ==========================================================================
+  notifications-function:
+    build:
+      context: ../fcg-notifications-function
+      dockerfile: Dockerfile
     environment:
-      ASPNETCORE_ENVIRONMENT: Development
-      RabbitMq__Host: rabbitmq
-      RabbitMq__Username: guest
-      RabbitMq__Password: guest
+      FUNCTIONS_WORKER_RUNTIME: dotnet-isolated
+      AzureWebJobsStorage: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;QueueEndpoint=http://azurite:10001/devstoreaccount1;TableEndpoint=http://azurite:10002/devstoreaccount1"
+      RabbitMqConnection: amqp://guest:guest@rabbitmq:5672/
+      RabbitMqUserCreatedQueue: notifications-user-created
+      RabbitMqPaymentProcessedQueue: notifications-payment-processed
       Smtp__Enabled: "true"
       Smtp__Host: mailpit
       Smtp__Port: "1025"
+      Smtp__UseStartTls: "false"
       Smtp__FromAddress: noreply@fcg.local
       Smtp__FromName: FIAP Cloud Games
     depends_on:
       rabbitmq:
         condition: service_healthy
+      azurite:
+        condition: service_healthy
       mailpit:
         condition: service_healthy
+    restart: unless-stopped
+
+  # ==========================================================================
+  # Observabilidade — Opcao A: Prometheus + Grafana
+  # ==========================================================================
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-lifecycle
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      - users-api
+      - catalog-api
+      - payments-api
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/fcg-overview.json
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
 
 volumes:
   users-api-data:
   catalog-api-data:
   payments-api-data:
+  mongo-data:
+  redis-data:
+  azurite-data:
+  prometheus-data:
+  grafana-data:

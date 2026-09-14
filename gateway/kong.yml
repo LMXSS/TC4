@@ -1,0 +1,129 @@
+# Configuracao declarativa do Kong (modo DB-less).
+#
+# O Kong e a unica porta de entrada da FCG: nenhum microsservico e publicado
+# diretamente. Ele termina o trafego externo na porta 8000, valida o JWT emitido pela
+# Users API e roteia para os servicos internos pelo nome de DNS da rede (compose) ou
+# pelo nome do Service (Kubernetes).
+#
+# Este arquivo e versionado; alterar rota ou politica e uma mudanca de codigo, revisada
+# como qualquer outra.
+_format_version: "3.0"
+_transform: true
+
+# ---------------------------------------------------------------------------
+# Consumidor que representa a Users API como emissora dos tokens.
+# A chave e o claim "iss" do JWT (Jwt:Issuer = "FCG") e o segredo e a mesma
+# Jwt:Key usada para assinar em HS256 — as duas pontas precisam bater.
+# O arquivo versionado guarda apenas o marcador __FCG_JWT_KEY__; o entrypoint do
+# container substitui pelo valor de FCG_JWT_KEY antes de o Kong ler a configuracao.
+# Assim o segredo real nunca entra no repositorio.
+# ---------------------------------------------------------------------------
+consumers:
+  - username: fcg-issuer
+    jwt_secrets:
+      - key: FCG
+        algorithm: HS256
+        secret: "__FCG_JWT_KEY__"
+
+services:
+  # -------------------------------------------------------------------------
+  # Users API — cadastro, login e emissao de token.
+  # -------------------------------------------------------------------------
+  - name: users-api
+    url: http://users-api:8080
+    retries: 3
+    connect_timeout: 5000
+    read_timeout: 30000
+    write_timeout: 30000
+    routes:
+      # Publica por definicao: quem chama /api/auth ainda nao tem token.
+      - name: users-auth
+        paths:
+          - /api/auth
+        strip_path: false
+        plugins:
+          # Barreira contra forca bruta no login e contra registro em massa.
+          - name: rate-limiting
+            config:
+              minute: 30
+              hour: 300
+              policy: local
+              limit_by: ip
+
+  # -------------------------------------------------------------------------
+  # Catalog API — catalogo, catalogo expandido (MongoDB), avaliacoes e biblioteca.
+  # -------------------------------------------------------------------------
+  - name: catalog-api
+    url: http://catalog-api:8080
+    retries: 3
+    connect_timeout: 5000
+    read_timeout: 30000
+    write_timeout: 30000
+    routes:
+      # Leitura do catalogo, da busca e das avaliacoes: aberta ao publico.
+      - name: catalog-public-read
+        paths:
+          - /api/games
+        methods:
+          - GET
+          - HEAD
+          - OPTIONS
+        strip_path: false
+        plugins:
+          - name: rate-limiting
+            config:
+              minute: 1200
+              policy: local
+              limit_by: ip
+
+      # Escrita no catalogo e nas avaliacoes: exige JWT valido.
+      # O Kong rejeita com 401 antes de encostar no microsservico.
+      - name: catalog-write
+        paths:
+          - /api/games
+        methods:
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+        strip_path: false
+        plugins:
+          - name: jwt
+            config:
+              key_claim_name: iss
+              claims_to_verify:
+                - exp
+              run_on_preflight: true
+
+      # Biblioteca do usuario e inicio da compra: sempre autenticado.
+      - name: catalog-library
+        paths:
+          - /api/users/me
+        strip_path: false
+        plugins:
+          - name: jwt
+            config:
+              key_claim_name: iss
+              claims_to_verify:
+                - exp
+              run_on_preflight: true
+
+# ---------------------------------------------------------------------------
+# Plugins globais.
+# ---------------------------------------------------------------------------
+plugins:
+  # Metricas do gateway (latencia, status code, upstream health) na porta 8100,
+  # coletadas pelo Prometheus junto com as metricas das APIs.
+  - name: prometheus
+    config:
+      status_code_metrics: true
+      latency_metrics: true
+      upstream_health_metrics: true
+      bandwidth_metrics: true
+
+  # Correlaciona a requisicao que entra no gateway com os logs de cada servico.
+  - name: correlation-id
+    config:
+      header_name: X-Correlation-ID
+      generator: uuid
+      echo_downstream: true

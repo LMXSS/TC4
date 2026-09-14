@@ -1,17 +1,20 @@
-# Aplica no cluster local a infraestrutura (RabbitMQ + Mailpit) e os manifestos das 4 APIs.
+# Aplica no cluster local a stack completa da Fase 3:
+# infraestrutura, as 3 APIs, a funcao serverless, o gateway Kong e a observabilidade.
 #
 # Os manifestos das APIs vivem na pasta k8s/ da RAIZ de cada repositorio de API
-# (nao neste repo), entao o script precisa saber onde eles estao.
+# (nao neste repo), entao o script precisa saber onde eles estao. Os manifestos de
+# infraestrutura, da funcao, do gateway e da observabilidade sao deste repositorio.
 #
 # Uso:
 #   .\deploy-k8s.ps1                                  # detecta automaticamente
-#   .\deploy-k8s.ps1 -ReposRoot D:\PosGrad\fcg-repos  # pasta com os 4 repos de API
+#   .\deploy-k8s.ps1 -ReposRoot D:\PosGrad\fcg-repos  # pasta com os repos de API
 #   .\deploy-k8s.ps1 -Delete                          # remove tudo do cluster
 #
 # Pre-requisitos:
 #   - Kubernetes habilitado (Docker Desktop -> Settings -> Kubernetes)
 #   - Imagens fcg/*:latest ja buildadas (.\build-images.ps1)
-#   - jwt-key igual nos secret.yaml de Users e Catalog (senao o token e rejeitado)
+#   - jwt-key igual nos Secrets de Users, Catalog e Kong (senao o gateway rejeita
+#     todo token valido)
 
 param(
     [string]$ReposRoot,
@@ -25,71 +28,90 @@ if (-not (Get-Command kubectl -ErrorAction SilentlyContinue)) {
     exit 1
 }
 
+# A funcao serverless nao esta aqui: o manifesto dela e deste repo
+# (k8s\notifications-function.yaml), porque a imagem vem do repo da funcao.
 $services = @(
-    @{ Api = "Users.Api";         Repo = "fcg-users-api" },
-    @{ Api = "Catalog.Api";       Repo = "fcg-catalog-api" },
-    @{ Api = "Payments.Api";      Repo = "fcg-payments-api" },
-    @{ Api = "Notifications.Api"; Repo = "fcg-notifications-api" }
+    @{ Api = "Users.Api";    Repo = "fcg-users-api" },
+    @{ Api = "Catalog.Api";  Repo = "fcg-catalog-api" },
+    @{ Api = "Payments.Api"; Repo = "fcg-payments-api" }
 )
 
-# Descobre a pasta k8s/ de cada API: repos isolados (k8s na raiz do repo, L1)
-# ou monorepo (k8s dentro da pasta da API).
+# Descobre a pasta que contem os repos de API.
 $parent = Split-Path -Parent $PSScriptRoot
 
 $candidates = @()
-if ($ReposRoot) { $candidates += @{ Mode = "repos"; Root = $ReposRoot } }
-$candidates += @{ Mode = "monorepo"; Root = (Join-Path $parent "microservices") }
-$candidates += @{ Mode = "repos";    Root = $parent }
+if ($ReposRoot) { $candidates += $ReposRoot }
+$candidates += $parent
 
-$source = $null
+$rootPath = $null
 foreach ($c in $candidates) {
-    if (-not (Test-Path $c.Root)) { continue }
+    if (-not (Test-Path $c)) { continue }
 
     $ok = $true
     foreach ($svc in $services) {
-        $k8s = if ($c.Mode -eq "repos") { Join-Path $c.Root "$($svc.Repo)\k8s" } else { Join-Path $c.Root "$($svc.Api)\k8s" }
-        if (-not (Test-Path $k8s)) { $ok = $false; break }
+        if (-not (Test-Path (Join-Path (Join-Path $c $svc.Repo) "k8s"))) { $ok = $false; break }
     }
-    if ($ok) { $source = $c; break }
+    if ($ok) { $rootPath = (Resolve-Path $c).Path; break }
 }
 
-if (-not $source) {
+if (-not $rootPath) {
     Write-Host "Nao encontrei as pastas k8s/ das APIs." -ForegroundColor Red
-    Write-Host "Clone os 4 repos lado a lado e aponte a pasta que os contem:" -ForegroundColor Yellow
+    Write-Host "Clone os repos lado a lado e aponte a pasta que os contem:" -ForegroundColor Yellow
     Write-Host "  .\deploy-k8s.ps1 -ReposRoot C:\caminho\para\os\repos" -ForegroundColor Gray
-    Write-Host "Esperado: <ReposRoot>\fcg-users-api\k8s\ (e os outros 3)" -ForegroundColor Gray
+    Write-Host "Esperado: <ReposRoot>\fcg-users-api\k8s\ (e os outros 2)" -ForegroundColor Gray
     exit 1
 }
 
-$rootPath = (Resolve-Path $source.Root).Path
 $verb = if ($Delete) { "delete" } else { "apply" }
 
-Write-Host "Origem dos manifestos: $rootPath  (modo: $($source.Mode))" -ForegroundColor Cyan
+Write-Host "Origem dos manifestos das APIs: $rootPath" -ForegroundColor Cyan
 Write-Host "Operacao: kubectl $verb" -ForegroundColor Cyan
 
-# Infra primeiro: as APIs dependem de rabbitmq e mailpit por nome de Service.
-$infra = @(
-    (Join-Path $PSScriptRoot "k8s\rabbitmq.yaml"),
-    (Join-Path $PSScriptRoot "k8s\mailpit.yaml")
-)
-
-foreach ($file in $infra) {
+function Invoke-Kubectl($path, $label) {
     Write-Host ""
-    Write-Host ">> kubectl $verb -f $(Split-Path -Leaf $file)" -ForegroundColor Cyan
-    & kubectl $verb -f $file
+    Write-Host ">> [$label] kubectl $verb -f $path" -ForegroundColor Cyan
+    & kubectl $verb -f $path
     if ($LASTEXITCODE -ne 0 -and -not $Delete) { exit $LASTEXITCODE }
+}
+
+# Os ConfigMaps do Kong e do dashboard do Grafana sao gerados a partir dos mesmos
+# arquivos que o compose usa — nada e duplicado a mao.
+if (-not $Delete) {
+    Write-Host ""
+    Write-Host ">> ConfigMaps gerados de gateway\kong.yml e do dashboard do Grafana" -ForegroundColor Cyan
+
+    $kongYml = Join-Path $PSScriptRoot "gateway\kong.yml"
+    kubectl create configmap kong-declarative --from-file=kong.yml=$kongYml --dry-run=client -o yaml | kubectl apply -f -
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    $dashboard = Join-Path $PSScriptRoot "observability\grafana\dashboards\fcg-overview.json"
+    kubectl create configmap grafana-dashboards --from-file=fcg-overview.json=$dashboard --dry-run=client -o yaml | kubectl apply -f -
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+
+# Infra primeiro: os servicos dependem de rabbitmq, mongo, redis, mailpit e azurite
+# por nome de Service.
+foreach ($f in @("rabbitmq.yaml", "mongo.yaml", "redis.yaml", "mailpit.yaml", "azurite.yaml")) {
+    Invoke-Kubectl (Join-Path $PSScriptRoot "k8s\$f") "infra"
 }
 
 foreach ($svc in $services) {
-    $k8s = if ($source.Mode -eq "repos") { Join-Path $rootPath "$($svc.Repo)\k8s" } else { Join-Path $rootPath "$($svc.Api)\k8s" }
+    Invoke-Kubectl (Join-Path (Join-Path $rootPath $svc.Repo) "k8s") $svc.Api
+}
 
-    Write-Host ""
-    Write-Host ">> [$($svc.Api)] kubectl $verb -f $k8s" -ForegroundColor Cyan
-    & kubectl $verb -f $k8s
-    if ($LASTEXITCODE -ne 0 -and -not $Delete) { exit $LASTEXITCODE }
+Invoke-Kubectl (Join-Path $PSScriptRoot "k8s\notifications-function.yaml") "Notifications.Fn"
+Invoke-Kubectl (Join-Path $PSScriptRoot "k8s\gateway")                     "gateway"
+Invoke-Kubectl (Join-Path $PSScriptRoot "k8s\observability")               "observabilidade"
+
+# Os HPAs sao aplicados um a um, e nao pela pasta: um Deployment que caia em
+# k8s\scaling\ por engano sobrescreveria o Deployment real do servico homonimo.
+# O HPA depende do metrics-server; sem ele o apply passa mas o autoscaling fica ocioso.
+foreach ($f in @("hpa-payments-api.yaml", "hpa-notifications-function.yaml")) {
+    Invoke-Kubectl (Join-Path $PSScriptRoot "k8s\scaling\$f") "escala"
 }
 
 if ($Delete) {
+    kubectl delete configmap kong-declarative grafana-dashboards --ignore-not-found
     Write-Host ""
     Write-Host "[OK] Recursos removidos do cluster." -ForegroundColor Green
     exit 0
@@ -101,7 +123,11 @@ Write-Host "  kubectl get pods -w" -ForegroundColor Gray
 Write-Host ""
 kubectl get pods
 Write-Host ""
-Write-Host "Acesso (port-forward, um por terminal):" -ForegroundColor Gray
-Write-Host "  kubectl port-forward svc/users-api 5101:80" -ForegroundColor Gray
-Write-Host "  kubectl port-forward svc/catalog-api 5102:80" -ForegroundColor Gray
+Write-Host "Acesso (NodePort):" -ForegroundColor Gray
+Write-Host "  API Gateway: http://localhost:30080" -ForegroundColor Gray
+Write-Host "  Prometheus:  http://localhost:30090" -ForegroundColor Gray
+Write-Host "  Grafana:     http://localhost:30300" -ForegroundColor Gray
+Write-Host ""
+Write-Host "Sob demanda (port-forward, um por terminal):" -ForegroundColor Gray
 Write-Host "  kubectl port-forward svc/mailpit 8025:8025" -ForegroundColor Gray
+Write-Host "  kubectl port-forward svc/rabbitmq 15672:15672" -ForegroundColor Gray

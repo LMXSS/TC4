@@ -1,13 +1,11 @@
-# Mailpit: servidor SMTP de teste + caixa de entrada web.
-# O Notifications.Api envia os e-mails para o Service "mailpit" na porta 1025
-# (ver Smtp__Host / Smtp__Port no configmap.yaml do Notifications).
-#
-#   kubectl apply -f k8s/mailpit.yaml
-#   kubectl port-forward svc/mailpit 8025:8025   # abre http://localhost:8025
+# Mailpit — servidor SMTP de desenvolvimento com caixa de entrada web.
+# Recebe os e-mails enviados pela funcao serverless de notificacoes.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: mailpit
+  labels:
+    app: mailpit
 spec:
   replicas: 1
   selector:
@@ -27,11 +25,16 @@ spec:
             - containerPort: 8025
               name: http
           readinessProbe:
-            httpGet:
-              path: /
+            tcpSocket:
               port: 8025
             initialDelaySeconds: 5
             periodSeconds: 10
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              memory: 192Mi
 ---
 apiVersion: v1
 kind: Service

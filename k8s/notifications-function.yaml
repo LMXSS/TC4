@@ -1,0 +1,103 @@
+# Funcao serverless de notificacoes rodando dentro do cluster.
+#
+# A imagem e a mesma do repositorio fcg-notifications-function, construida sobre o host
+# oficial de Azure Functions v4. Ela substitui o Deployment notifications-api da Fase 2:
+# o processo continua existindo como pod, mas quem decide invocar o codigo e o host de
+# Functions ao ver mensagem na fila — e o HPA acompanha essa carga.
+#
+# Na Azure, o mesmo artefato roda como Function App (fcg-notifications-function/infra/main.bicep).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: notifications-function-config
+  labels:
+    app: notifications-function
+data:
+  FUNCTIONS_WORKER_RUNTIME: "dotnet-isolated"
+  RabbitMqUserCreatedQueue: "notifications-user-created"
+  RabbitMqPaymentProcessedQueue: "notifications-payment-processed"
+  Smtp__Enabled: "true"
+  Smtp__Host: "mailpit"
+  Smtp__Port: "1025"
+  Smtp__UseStartTls: "false"
+  Smtp__FromAddress: "noreply@fcg.local"
+  Smtp__FromName: "FIAP Cloud Games"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: notifications-function-secret
+  labels:
+    app: notifications-function
+type: Opaque
+stringData:
+  rabbitmq-connection: "amqp://guest:guest@rabbitmq:5672/"
+  # Credenciais bem conhecidas do emulador Azurite — validas apenas em desenvolvimento.
+  azure-webjobs-storage: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;QueueEndpoint=http://azurite:10001/devstoreaccount1;TableEndpoint=http://azurite:10002/devstoreaccount1"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notifications-function
+  labels:
+    app: notifications-function
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: notifications-function
+  template:
+    metadata:
+      labels:
+        app: notifications-function
+    spec:
+      containers:
+        - name: notifications-function
+          image: fcg/notifications-function:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: notifications-function-config
+          env:
+            - name: RabbitMqConnection
+              valueFrom:
+                secretKeyRef:
+                  name: notifications-function-secret
+                  key: rabbitmq-connection
+            - name: AzureWebJobsStorage
+              valueFrom:
+                secretKeyRef:
+                  name: notifications-function-secret
+                  key: azure-webjobs-storage
+          ports:
+            - containerPort: 80
+              name: http
+          readinessProbe:
+            tcpSocket:
+              port: 80
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            tcpSocket:
+              port: 80
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              memory: 640Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notifications-function
+spec:
+  selector:
+    app: notifications-function
+  ports:
+    - port: 80
+      targetPort: 80
