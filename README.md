@@ -103,7 +103,7 @@ fcg-notifications-function/
 
 | Repositório | Papel |
 |---|---|
-| [`fcg-platform`](https://gitlab.com/techchallenge_fase2/fcg-platform) | Orquestração: compose, Kubernetes, Kong, Prometheus/Grafana |
-| [`fcg-users-api`](https://gitlab.com/techchallenge_fase2/fcg-users-api) | Publica `UserCreatedEvent` |
-| [`fcg-catalog-api`](https://gitlab.com/techchallenge_fase2/fcg-catalog-api) | Publica `OrderPlacedEvent` |
-| [`fcg-payments-api`](https://gitlab.com/techchallenge_fase2/fcg-payments-api) | Publica `PaymentProcessedEvent` |
+| [`fcg-platform`](https://github.com/VHMoschini/fcg-platform) | Orquestração: compose, Kubernetes, Kong, Prometheus/Grafana |
+| [`fcg-users-api`](https://github.com/VHMoschini/fcg-users-api) | Publica `UserCreatedEvent` |
+| [`fcg-catalog-api`](https://github.com/VHMoschini/fcg-catalog-api) | Publica `OrderPlacedEvent` |
+| [`fcg-payments-api`](https://github.com/VHMoschini/fcg-payments-api) | Publica `PaymentProcessedEvent` |
