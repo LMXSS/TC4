@@ -4,6 +4,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Payments.Api.Consumers;
 using Payments.Api.Infrastructure;
+using Payments.Api.Observability;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -19,16 +20,14 @@ builder.Services.AddDbContext<PaymentsDbContext>(o => o.UseSqlite(connectionStri
 builder.Services.Configure<PaymentSimulationOptions>(
     builder.Configuration.GetSection(PaymentSimulationOptions.SectionName));
 
+builder.Services.AddFcgObservability();
+
 var rabbitHost = builder.Configuration["RabbitMq:Host"] ?? "localhost";
 var rabbitUser = builder.Configuration["RabbitMq:Username"] ?? "guest";
 var rabbitPass = builder.Configuration["RabbitMq:Password"] ?? "guest";
 
 builder.Services.AddMassTransit(x =>
 {
-    // Prefixo por servico (ver a nota no Catalog.Api). Hoje o OrderPlacedConsumer
-    // e unico, mas a fila deixa de depender de nenhum outro servico batizar uma
-    // classe com o mesmo nome.
-    x.SetEndpointNameFormatter(new KebabCaseEndpointNameFormatter("payments", false));
     x.AddConsumer<OrderPlacedConsumer>();
     x.UsingRabbitMq((context, cfg) =>
     {
@@ -37,9 +36,6 @@ builder.Services.AddMassTransit(x =>
             h.Username(rabbitUser);
             h.Password(rabbitPass);
         });
-        // Ver a nota no Catalog.Api: o "database is locked" do SQLite e transitorio e
-        // precisa de reentrega, nao de fila de erro.
-        cfg.UseMessageRetry(r => r.Interval(5, TimeSpan.FromMilliseconds(200)));
         cfg.ConfigureEndpoints(context);
     });
 });
@@ -59,7 +55,16 @@ if (app.Environment.IsDevelopment())
 }
 
 app.MapControllers();
+
+// Endpoint de scrape do Prometheus (nao exige autenticacao; exposto so na rede interna).
+app.MapPrometheusScrapingEndpoint();
+
 app.MapGet("/health", () => Results.Ok(new { status = "ok", service = "payments-api" }));
+app.MapGet("/health/live", () => Results.Ok(new { status = "ok", service = "payments-api" }));
+app.MapGet("/health/ready", async (PaymentsDbContext db, CancellationToken ct) =>
+    await db.Database.CanConnectAsync(ct)
+        ? Results.Ok(new { status = "ready", service = "payments-api" })
+        : Results.StatusCode(StatusCodes.Status503ServiceUnavailable));
 
 app.Run();
 
