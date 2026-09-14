@@ -1,13 +1,18 @@
 using System.Text;
 using Catalog.Api.Consumers;
+using Catalog.Api.Infrastructure.Caching;
+using Catalog.Api.Infrastructure.Mongo;
 using Catalog.Api.Infrastructure.Persistence;
 using Catalog.Api.Infrastructure.Security;
 using Catalog.Api.Infrastructure.Services;
 using Catalog.Api.Middleware;
+using Catalog.Api.Observability;
+using MongoDB.Driver;
 using MassTransit;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 
@@ -45,8 +50,39 @@ connectionString = ResolveSqlitePath(connectionString, builder.Environment.Conte
 builder.Services.AddDbContext<CatalogDbContext>(o => o.UseSqlite(connectionString));
 
 builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptions.SectionName));
+
+// ---- Persistencia poliglota: MongoDB para o catalogo expandido e as avaliacoes ----
+builder.Services.Configure<MongoOptions>(builder.Configuration.GetSection(MongoOptions.SectionName));
+builder.Services.AddSingleton<IMongoClient>(sp =>
+{
+    var mongo = sp.GetRequiredService<IOptions<MongoOptions>>().Value;
+    return new MongoClient(mongo.ConnectionString);
+});
+builder.Services.AddScoped<CatalogMongoContext>();
+builder.Services.AddHostedService<MongoIndexInitializer>();
+
+// ---- Cache distribuido (Redis) ----
+builder.Services.Configure<CacheOptions>(builder.Configuration.GetSection(CacheOptions.SectionName));
+var cacheOptions = builder.Configuration.GetSection(CacheOptions.SectionName).Get<CacheOptions>() ?? new CacheOptions();
+if (cacheOptions.RedisEnabled)
+{
+    builder.Services.AddStackExchangeRedisCache(options =>
+    {
+        options.Configuration = cacheOptions.RedisConnectionString;
+        options.InstanceName = cacheOptions.InstanceName;
+    });
+}
+else
+{
+    // Sem Redis a API continua funcionando com cache no proprio processo.
+    builder.Services.AddDistributedMemoryCache();
+}
+builder.Services.AddScoped<CatalogCache>();
+
 builder.Services.AddScoped<GameService>();
 builder.Services.AddScoped<LibraryService>();
+builder.Services.AddScoped<GameDetailsService>();
+builder.Services.AddScoped<ReviewService>();
 
 var jwt = builder.Configuration.GetSection(JwtOptions.SectionName).Get<JwtOptions>()
     ?? throw new InvalidOperationException("Jwt ausente.");
@@ -73,19 +109,14 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     });
 builder.Services.AddAuthorization();
 
+builder.Services.AddFcgObservability();
+
 var rabbitHost = builder.Configuration["RabbitMq:Host"] ?? "localhost";
 var rabbitUser = builder.Configuration["RabbitMq:Username"] ?? "guest";
 var rabbitPass = builder.Configuration["RabbitMq:Password"] ?? "guest";
 
 builder.Services.AddMassTransit(x =>
 {
-    // O prefixo do servico e obrigatorio: sem ele, o nome da fila sai do nome da
-    // classe do consumidor, e Catalog e Notifications tem um PaymentProcessedConsumer
-    // cada. Os dois cairiam na MESMA fila e virariam consumidores concorrentes --
-    // o RabbitMQ entregaria cada PaymentProcessedEvent a apenas um deles, entao a
-    // compra ora atualizaria a biblioteca, ora enviaria o e-mail, nunca os dois.
-    // Com o prefixo, cada servico tem sua propria fila ligada ao mesmo exchange.
-    x.SetEndpointNameFormatter(new KebabCaseEndpointNameFormatter("catalog", false));
     x.AddConsumer<PaymentProcessedConsumer>();
     x.UsingRabbitMq((context, cfg) =>
     {
@@ -94,10 +125,6 @@ builder.Services.AddMassTransit(x =>
             h.Username(rabbitUser);
             h.Password(rabbitPass);
         });
-        // Sob concorrencia o SQLite recusa escritas com "database is locked". Essas
-        // falhas sao transitorias: reentregar a mensagem resolve. Sem retry, elas
-        // iriam direto para a fila de erro e a compra se perderia.
-        cfg.UseMessageRetry(r => r.Interval(5, TimeSpan.FromMilliseconds(200)));
         cfg.ConfigureEndpoints(context);
     });
 });
@@ -121,7 +148,38 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
 
+// Endpoint de scrape do Prometheus (nao exige autenticacao; exposto so na rede interna).
+app.MapPrometheusScrapingEndpoint();
+
+app.MapGet("/health/live", () => Results.Ok(new { status = "ok", service = "catalog-api" }))
+    .WithTags("Health").AllowAnonymous();
+
+app.MapGet("/health/ready", async (CatalogDbContext db, CatalogMongoContext mongo, CancellationToken ct) =>
+{
+    var relacional = await db.Database.CanConnectAsync(ct);
+    var documental = await PingMongoAsync(mongo, ct);
+    return relacional && documental
+        ? Results.Ok(new { status = "ready", service = "catalog-api", sqlite = true, mongo = true })
+        : Results.Json(
+            new { status = "degraded", service = "catalog-api", sqlite = relacional, mongo = documental },
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+}).WithTags("Health").AllowAnonymous();
+
 app.Run();
+
+static async Task<bool> PingMongoAsync(CatalogMongoContext mongo, CancellationToken cancellationToken)
+{
+    try
+    {
+        await mongo.Database.RunCommandAsync<MongoDB.Bson.BsonDocument>(
+            new MongoDB.Bson.BsonDocument("ping", 1), cancellationToken: cancellationToken);
+        return true;
+    }
+    catch
+    {
+        return false;
+    }
+}
 
 static string ResolveSqlitePath(string connectionString, string contentRoot)
 {

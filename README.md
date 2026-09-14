@@ -1,139 +1,175 @@
-# FCG — Catalog API
+# FCG Catalog API
 
-Microsserviço de **catálogo de jogos e biblioteca do usuário** da plataforma FIAP Cloud Games (FCG).
+Catálogo de jogos, biblioteca do usuário e início do fluxo de compra da **FIAP Cloud Games**.
 
-Responsabilidades:
+Na Fase 3 este serviço ganhou **persistência poliglota** (MongoDB para o catálogo expandido e as avaliações), **cache distribuído** (Redis) e **instrumentação de métricas** no formato Prometheus.
 
-- CRUD de jogos (restrito ao papel **Administrador**) e listagem pública.
-- Biblioteca do usuário autenticado.
-- **Início do fluxo de compra**: `POST /api/users/me/library/games/{gameId}` publica **`OrderPlacedEvent`** e responde **202 Accepted** — a compra é assíncrona.
-- Consome **`PaymentProcessedEvent`**: ao receber um pagamento **aprovado**, adiciona o jogo à biblioteca do usuário.
+## Responsabilidades
 
-Este repositório é **autocontido**: builda, containeriza e faz deploy sem depender de nenhum outro repositório da plataforma.
-
----
-
-## Estrutura
-
-```
-fcg-catalog-api/
-├── k8s/                       Manifestos Kubernetes (Deployment, Service, ConfigMap, Secret)
-├── Catalog.Api/               Código da API + Dockerfile
-├── FCG.Messaging.Contracts/   Contratos de evento compartilhados entre os microsserviços
-├── Catalog.Api.sln
-└── README.md
-```
-
-> `FCG.Messaging.Contracts` é a **cópia** dos contratos de mensagem da plataforma. Os quatro microsserviços carregam a mesma cópia: alterar um evento exige replicar a mudança nos quatro repositórios.
-
----
-
-## Pré-requisitos
-
-- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
-- **RabbitMQ** acessível.
-- **Users API** no ar — é quem emite o token JWT usado aqui. `Jwt__Key`, `Jwt__Issuer` e `Jwt__Audience` **precisam ser idênticas** nos dois serviços, senão o token é rejeitado.
-- Para exercitar a compra de ponta a ponta: **Payments API** (processa o pagamento) e **Notifications API** (envia o e-mail).
-
-Subir um RabbitMQ local:
-
-```powershell
-docker run -d --name fcg-rabbit -p 5672:5672 -p 15672:15672 rabbitmq:3.13-management-alpine
-```
-
----
-
-## Executar
-
-### Local (.NET SDK)
-
-Da **raiz deste repositório**:
-
-```powershell
-dotnet run --project Catalog.Api
-```
-
-Swagger (Development): http://localhost:5102/swagger — clique em **Authorize** e informe o token `Bearer` emitido pelo Users API.
-
-As migrations são aplicadas automaticamente na subida.
-
-### Docker
-
-Da **raiz deste repositório** (o contexto do build é a raiz, pois o Dockerfile copia a API **e** os contratos):
-
-```powershell
-docker build -f Catalog.Api/Dockerfile -t fcg/catalog-api:latest .
-docker run -p 5102:8080 `
-  -e RabbitMq__Host=host.docker.internal `
-  -e Jwt__Key="CHANGE_ME_DEV_KEY_MIN_32_CHARS_LONG!!" `
-  fcg/catalog-api:latest
-```
-
-> No Linux, troque `host.docker.internal` pelo IP do host para alcançar o RabbitMQ.
-
-A imagem `fcg/catalog-api:latest` é a que o repositório de orquestração (`fcg-platform`) espera encontrar no `docker-compose`, e a mesma referenciada pelo `k8s/deployment.yaml`.
-
----
-
-## Variáveis de ambiente
-
-| Variável | Descrição | Padrão |
-|----------|-----------|--------|
-| `ConnectionStrings__DefaultConnection` | Banco SQLite do catálogo e da biblioteca. No container, aponte para o volume: `Data Source=/app/data/catalog.db`. | `Data Source=catalog.db` |
-| `Jwt__Key` | Chave simétrica de validação, **mínimo 32 caracteres**. ⚠️ **Deve ser idêntica à do Users API** — divergência aqui é a causa mais comum de `401` neste serviço. | *(valor de dev; trocar)* |
-| `Jwt__Issuer` | Emissor aceito. Precisa bater com o Users. | `FCG` |
-| `Jwt__Audience` | Audiência aceita. Precisa bater com o Users. | `FCG` |
-| `RabbitMq__Host` | Host do broker: `localhost` (dev), `rabbitmq` (compose/K8s), `host.docker.internal` (container isolado). | `localhost` |
-| `RabbitMq__Username` | Usuário do RabbitMQ. | `guest` |
-| `RabbitMq__Password` | Senha do RabbitMQ. | `guest` |
-| `ASPNETCORE_ENVIRONMENT` | `Development` habilita o Swagger. | `Production` (no container) |
-| `ASPNETCORE_URLS` | Porta de escuta dentro do container. | `http://+:8080` |
-
-### Portas
-
-| Contexto | Endereço |
-|----------|----------|
-| `dotnet run` (Development) | http://localhost:5102 |
-| Docker / compose | host `5102` → container `8080` |
-| Service do Kubernetes | `catalog-api:80` → container `8080` |
-
----
-
-## Kubernetes
-
-Manifestos em [`k8s/`](k8s): `deployment.yaml`, `service.yaml`, `configmap.yaml`, `secret.yaml`.
-
-```powershell
-kubectl apply -f k8s/
-kubectl get pods -l app=catalog-api
-kubectl port-forward svc/catalog-api 5102:80
-```
-
-O Deployment usa `image: fcg/catalog-api:latest` com `imagePullPolicy: IfNotPresent` — **builde a imagem localmente antes** (seção Docker) para o cluster local encontrá-la.
-
-Pré-requisito: um RabbitMQ acessível pelo Service `rabbitmq` no cluster (o manifesto vive no repositório `fcg-platform`).
-
-> ⚠️ **Antes de produção:** troque `jwt-key` em `k8s/secret.yaml` — e aplique **o mesmo valor** no Secret do Users API.
-
----
+| Área | O quê |
+|---|---|
+| Catálogo relacional (SQLite) | CRUD de jogos, biblioteca do usuário — fonte da verdade transacional |
+| Catálogo expandido (MongoDB) | Descrição, mídias, tags, plataformas e requisitos por perfil — esquema flexível |
+| Avaliações (MongoDB) | Notas e comentários, com selo de compra verificada e resumo agregado |
+| Cache (Redis) | Listagem, documento expandido, páginas de avaliações e busca |
+| Mensageria | Publica `OrderPlacedEvent`; consome `PaymentProcessedEvent` |
+| Observabilidade | Expõe `/metrics` (OpenTelemetry) |
 
 ## Endpoints
 
-| Método | Rota | Acesso | Descrição |
-|--------|------|--------|-----------|
-| `GET` | `/api/games` | Público | Lista os jogos do catálogo. |
-| `POST` | `/api/games` | Administrador | Cadastra um jogo. |
-| `PUT` | `/api/games/{id}` | Administrador | Atualiza um jogo. |
-| `DELETE` | `/api/games/{id}` | Administrador | Inativa um jogo. |
-| `POST` | `/api/games/{id}/reactivate` | Administrador | Reativa um jogo inativado. |
-| `GET` | `/api/users/me/library` | Autenticado | Biblioteca do usuário. |
-| `POST` | `/api/users/me/library/games/{gameId}` | Autenticado | **Inicia a compra**: publica `OrderPlacedEvent` e retorna `202 Accepted`. O jogo só entra na biblioteca depois que o Payments aprovar. |
+### Catálogo relacional
 
----
+| Método | Rota | Auth |
+|---|---|---|
+| `GET` | `/api/games` | — *(cache)* |
+| `POST` | `/api/games` | Admin |
+| `PUT` | `/api/games/{id}` | Admin |
+| `DELETE` | `/api/games/{id}` | Admin |
+| `POST` | `/api/games/{id}/reactivate` | Admin |
 
-## Eventos
+### Catálogo expandido (MongoDB)
 
-| Evento | Direção | Efeito |
-|--------|---------|--------|
-| `OrderPlacedEvent` | **Publica** | Dispara o processamento do pagamento no Payments API. |
-| `PaymentProcessedEvent` | **Consome** | Se aprovado, adiciona o jogo à biblioteca do usuário. Se recusado, a biblioteca não muda. |
+| Método | Rota | Auth |
+|---|---|---|
+| `GET` | `/api/games/{id}/details` | — *(cache)* |
+| `PUT` | `/api/games/{id}/details` | Admin |
+| `GET` | `/api/games/search?q=&tag=&genero=&precoMaximo=&pagina=&tamanho=` | — *(cache)* |
+
+### Avaliações (MongoDB)
+
+| Método | Rota | Auth |
+|---|---|---|
+| `GET` | `/api/games/{id}/reviews` | — *(cache)* |
+| `GET` | `/api/games/{id}/reviews/summary` | — *(cache)* |
+| `POST` | `/api/games/{id}/reviews` | ✅ |
+| `DELETE` | `/api/games/{id}/reviews/me` | ✅ |
+
+### Biblioteca
+
+| Método | Rota | Auth |
+|---|---|---|
+| `GET` | `/api/users/me/library` | ✅ |
+| `POST` | `/api/users/me/library/games/{gameId}` | ✅ — responde **202** |
+
+### Operação
+
+| Rota | Descrição |
+|---|---|
+| `/health/live` | Processo de pé |
+| `/health/ready` | SQLite **e** MongoDB respondendo |
+| `/metrics` | Métricas no formato Prometheus |
+
+## Como o MongoDB entra na arquitetura
+
+O SQLite continua guardando o jogo e o vínculo com a biblioteca. O MongoDB guarda o que mudaria o schema relacional a cada jogo novo:
+
+| Coleção | Conteúdo | Índices |
+|---|---|---|
+| `game_details` | Documento expandido do jogo | Texto (título, descrição, tags) · tags · (ativo, gênero) |
+| `game_reviews` | Avaliações dos usuários | Único (gameId, usuarioId) · (gameId, criadoEm desc) |
+
+Título, gênero, preço e situação ficam **denormalizados** no documento, de modo que a busca roda inteiramente no Mongo, sem join entre bancos. Toda escrita no catálogo relacional sincroniza esses campos (`GameDetailsService.SyncFromRelationalAsync`).
+
+O resumo das avaliações — total, nota média e distribuição — sai de um pipeline de agregação.
+
+## Como o cache funciona
+
+`IDistributedCache` sobre Redis, encapsulado em `CatalogCache`:
+
+| Chave | TTL padrão |
+|---|---|
+| `games:list` | 60 s |
+| `game:{id}:details` | 300 s |
+| `game:{id}:reviews:{versão}:p{n}:s{n}` | 120 s |
+| `game:{id}:reviews:{versão}:summary` | 120 s |
+| `search:{versão}:{hash}` | 90 s |
+
+**Invalidação por token de versão.** `IDistributedCache` não remove por prefixo, então cada escopo carrega um token que entra na composição da chave; gravar uma avaliação troca o token e derruba todas as páginas daquele jogo de uma vez.
+
+**Degradação controlada.** Falha do Redis vira *miss* registrado em log — a requisição segue para a origem e responde normalmente.
+
+## Variáveis de ambiente
+
+| Variável | Padrão | Descrição |
+|---|---|---|
+| `ConnectionStrings__DefaultConnection` | `Data Source=catalog.db` | SQLite do catálogo e da biblioteca |
+| `Jwt__Key` / `Jwt__Issuer` / `Jwt__Audience` | — | **Mesmos valores da Users API** |
+| `RabbitMq__Host` / `__Username` / `__Password` | `localhost` / `guest` / `guest` | Broker |
+| `Mongo__ConnectionString` | `mongodb://localhost:27017` | MongoDB |
+| `Mongo__Database` | `fcg_catalog` | Base |
+| `Mongo__GameDetailsCollection` | `game_details` | Coleção do catálogo expandido |
+| `Mongo__ReviewsCollection` | `game_reviews` | Coleção de avaliações |
+| `Cache__RedisEnabled` | `true` | `false` usa cache em memória, sem Redis |
+| `Cache__RedisConnectionString` | `localhost:6379` | Redis |
+| `Cache__InstanceName` | `fcg:catalog:` | Prefixo das chaves |
+| `Cache__GamesListSeconds` | `60` | TTL da listagem |
+| `Cache__GameDetailsSeconds` | `300` | TTL do documento expandido |
+| `Cache__ReviewsSeconds` | `120` | TTL das avaliações |
+| `Cache__SearchSeconds` | `90` | TTL da busca |
+
+## Métricas expostas
+
+Além de `http_server_request_duration_seconds` (latência, throughput e status code) e das métricas de runtime .NET:
+
+| Métrica | Labels |
+|---|---|
+| `fcg_catalog_cache_requests_total` | `result` (hit/miss), `cache` |
+| `fcg_catalog_purchases_started_total` | — |
+| `fcg_catalog_purchases_confirmed_total` | — |
+| `fcg_catalog_reviews_total` | — |
+| `fcg_catalog_mongo_operation_duration_seconds` | `operation` |
+
+## Executando
+
+### Stack completa (recomendado)
+
+Sobe este serviço junto com gateway, MongoDB, Redis, RabbitMQ e observabilidade:
+
+```powershell
+cd ..\fcg-platform
+docker compose up -d --build
+```
+
+Acesso pelo gateway: <http://localhost:8000/api/games>.
+
+### Somente este serviço
+
+```powershell
+# Dependências
+docker run -d --name fcg-rabbit -p 5672:5672 -p 15672:15672 rabbitmq:3.13-management-alpine
+docker run -d --name fcg-mongo  -p 27017:27017 mongo:7.0
+docker run -d --name fcg-redis  -p 6379:6379  redis:7.4-alpine
+
+cd Catalog.Api
+dotnet run
+```
+
+Swagger em <http://localhost:5102/swagger>. Use **Authorize** com o token emitido pela Users API.
+
+### Docker
+
+```powershell
+# contexto = raiz do repositório
+docker build -t fcg/catalog-api:latest . -f Catalog.Api/Dockerfile
+```
+
+## Kubernetes
+
+Manifestos em [`k8s/`](k8s): `Deployment`, `Service`, `ConfigMap` e `Secret`.
+
+```powershell
+kubectl apply -f k8s/
+```
+
+> A `jwt-key` do Secret precisa ser idêntica à da Users API e à do Kong.
+
+O Deployment traz as anotações `prometheus.io/scrape` para entrar na coleta automática, e probes de `readiness`/`liveness` apontando para `/health/ready` e `/health/live`.
+
+## Repositórios relacionados
+
+| Repositório | Papel |
+|---|---|
+| [`fcg-platform`](https://github.com/VHMoschini/fcg-platform) | Orquestração — comece por aqui |
+| [`fcg-users-api`](https://github.com/VHMoschini/fcg-users-api) | Emite o JWT que este serviço valida |
+| [`fcg-payments-api`](https://github.com/VHMoschini/fcg-payments-api) | Processa o pagamento do pedido |
+| [`fcg-notifications-function`](https://github.com/VHMoschini/fcg-notifications-function) | Notifica o usuário por e-mail |

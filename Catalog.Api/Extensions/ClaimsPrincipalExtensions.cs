@@ -13,4 +13,14 @@ public static class ClaimsPrincipalExtensions
             throw new InvalidOperationException("Token sem identificacao de usuario.");
         return id;
     }
+
+    public static string GetUserName(this ClaimsPrincipal user) =>
+        user.FindFirstValue("name")
+        ?? user.FindFirstValue(ClaimTypes.Name)
+        ?? user.GetUserEmail();
+
+    public static string GetUserEmail(this ClaimsPrincipal user) =>
+        user.FindFirstValue(JwtRegisteredClaimNames.Email)
+        ?? user.FindFirstValue(ClaimTypes.Email)
+        ?? string.Empty;
 }

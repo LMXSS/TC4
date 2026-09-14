@@ -1,5 +1,6 @@
 using Catalog.Api.Contracts;
 using Catalog.Api.Domain.Entities;
+using Catalog.Api.Infrastructure.Caching;
 using Catalog.Api.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 
@@ -8,8 +9,15 @@ namespace Catalog.Api.Infrastructure.Services;
 public class GameService
 {
     private readonly CatalogDbContext _db;
+    private readonly CatalogCache _cache;
+    private readonly GameDetailsService _details;
 
-    public GameService(CatalogDbContext db) => _db = db;
+    public GameService(CatalogDbContext db, CatalogCache cache, GameDetailsService details)
+    {
+        _db = db;
+        _cache = cache;
+        _details = details;
+    }
 
     public async Task<GameResponse> CreateAsync(CreateGameRequest request, CancellationToken cancellationToken = default)
     {
@@ -22,6 +30,7 @@ public class GameService
         var jogo = new Jogo(request.Titulo.Trim(), genero, request.Preco);
         _db.Jogos.Add(jogo);
         await _db.SaveChangesAsync(cancellationToken);
+        await _details.SyncFromRelationalAsync(jogo, cancellationToken);
         return new GameResponse(jogo.Id, jogo.Titulo, jogo.Genero, jogo.Preco);
     }
 
@@ -33,17 +42,24 @@ public class GameService
 
         jogo.Atualizar(request.Titulo, request.Genero, request.Preco);
         await _db.SaveChangesAsync(cancellationToken);
+        await _details.SyncFromRelationalAsync(jogo, cancellationToken);
         return new GameResponse(jogo.Id, jogo.Titulo, jogo.Genero, jogo.Preco);
     }
 
-    public async Task<IReadOnlyList<GameResponse>> ListAsync(CancellationToken cancellationToken = default)
-    {
-        var list = await _db.Jogos.AsNoTracking()
-            .OrderBy(g => g.Titulo)
-            .Select(g => new GameResponse(g.Id, g.Titulo, g.Genero, g.Preco))
-            .ToListAsync(cancellationToken);
-        return list;
-    }
+    /// <summary>
+    /// Listagem publica do catalogo — o endpoint mais chamado da API e o primeiro a
+    /// sofrer com carga, entao responde pelo cache distribuido antes de tocar o SQLite.
+    /// </summary>
+    public async Task<IReadOnlyList<GameResponse>> ListAsync(CancellationToken cancellationToken = default) =>
+        await _cache.GetOrCreateAsync<IReadOnlyList<GameResponse>>(
+            CatalogCache.GamesListKey(),
+            "games-list",
+            TimeSpan.FromSeconds(_cache.Options.GamesListSeconds),
+            async ct => await _db.Jogos.AsNoTracking()
+                .OrderBy(g => g.Titulo)
+                .Select(g => new GameResponse(g.Id, g.Titulo, g.Genero, g.Preco))
+                .ToListAsync(ct),
+            cancellationToken);
 
     public async Task DeactivateAsync(Guid id, CancellationToken cancellationToken = default)
     {
@@ -52,6 +68,7 @@ public class GameService
             throw new KeyNotFoundException("Jogo nao encontrado.");
         jogo.Inativar();
         await _db.SaveChangesAsync(cancellationToken);
+        await _details.SyncFromRelationalAsync(jogo, cancellationToken);
     }
 
     public async Task<GameResponse> ReactivateAsync(Guid id, CancellationToken cancellationToken = default)
@@ -61,6 +78,7 @@ public class GameService
             throw new KeyNotFoundException("Jogo nao encontrado.");
         jogo.Reativar();
         await _db.SaveChangesAsync(cancellationToken);
+        await _details.SyncFromRelationalAsync(jogo, cancellationToken);
         return new GameResponse(jogo.Id, jogo.Titulo, jogo.Genero, jogo.Preco);
     }
 }

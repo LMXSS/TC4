@@ -1,9 +1,9 @@
 using Catalog.Api.Contracts;
 using Catalog.Api.Domain.Entities;
 using Catalog.Api.Infrastructure.Persistence;
+using Catalog.Api.Observability;
 using FCG.Messaging.Contracts;
 using MassTransit;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
 namespace Catalog.Api.Infrastructure.Services;
@@ -12,11 +12,13 @@ public class LibraryService
 {
     private readonly CatalogDbContext _db;
     private readonly IPublishEndpoint _publish;
+    private readonly CatalogMetrics _metrics;
 
-    public LibraryService(CatalogDbContext db, IPublishEndpoint publish)
+    public LibraryService(CatalogDbContext db, IPublishEndpoint publish, CatalogMetrics metrics)
     {
         _db = db;
         _publish = publish;
+        _metrics = metrics;
     }
 
     public async Task<IReadOnlyList<GameResponse>> GetMyLibraryAsync(Guid userId, CancellationToken cancellationToken = default)
@@ -51,6 +53,8 @@ public class LibraryService
             new OrderPlacedEvent(orderId, userId, gameId, game.Preco, userEmail),
             cancellationToken);
 
+        _metrics.CompraIniciada();
+
         return new StartPurchaseResponse(orderId, "Pedido enviado para processamento de pagamento.");
     }
 
@@ -70,20 +74,11 @@ public class LibraryService
         try
         {
             await _db.SaveChangesAsync(cancellationToken);
+            _metrics.CompraConfirmada();
         }
-        catch (DbUpdateException ex) when (IsDuplicateKey(ex))
+        catch (DbUpdateException)
         {
-            // Idempotencia: outro consumidor ja inseriu o mesmo par (UsuarioId, JogoId).
+            // Idempotencia: outro consumidor inseriu o mesmo par.
         }
     }
-
-    // Só a violacao da chave primaria (o par ja existe) e idempotencia. Qualquer outra
-    // falha de escrita -- o "database is locked" do SQLite sob concorrencia, por exemplo --
-    // precisa subir para o MassTransit reentregar a mensagem. Engolir tudo fazia a compra
-    // sumir em silencio: a linha nao era gravada e o consumidor logava "Biblioteca
-    // atualizada" logo em seguida, como se tivesse dado certo.
-    private static bool IsDuplicateKey(DbUpdateException ex) =>
-        ex.InnerException is SqliteException { SqliteErrorCode: SqliteConstraintViolation };
-
-    private const int SqliteConstraintViolation = 19;
 }
