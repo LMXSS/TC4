@@ -9,6 +9,7 @@ using Users.Api.Infrastructure.Security;
 using Users.Api.Infrastructure.Seed;
 using Users.Api.Infrastructure.Services;
 using Users.Api.Middleware;
+using Users.Api.Observability;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -53,6 +54,8 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     });
 builder.Services.AddAuthorization();
 
+builder.Services.AddFcgObservability();
+
 var rabbitHost = builder.Configuration["RabbitMq:Host"] ?? "localhost";
 var rabbitUser = builder.Configuration["RabbitMq:Username"] ?? "guest";
 var rabbitPass = builder.Configuration["RabbitMq:Password"] ?? "guest";
@@ -90,6 +93,18 @@ app.UseApiExceptionHandling();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+
+// Endpoint de scrape do Prometheus (nao exige autenticacao; exposto so na rede interna).
+app.MapPrometheusScrapingEndpoint();
+
+app.MapGet("/health/live", () => Results.Ok(new { status = "ok", service = "users-api" }))
+    .WithTags("Health").AllowAnonymous();
+
+app.MapGet("/health/ready", async (UsersDbContext db, CancellationToken ct) =>
+    await db.Database.CanConnectAsync(ct)
+        ? Results.Ok(new { status = "ready", service = "users-api" })
+        : Results.StatusCode(StatusCodes.Status503ServiceUnavailable))
+    .WithTags("Health").AllowAnonymous();
 
 app.Run();
 

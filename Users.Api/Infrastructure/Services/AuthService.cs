@@ -7,6 +7,7 @@ using Users.Api.Domain.Entities;
 using Users.Api.Domain.Services;
 using Users.Api.Infrastructure.Persistence;
 using Users.Api.Infrastructure.Security;
+using Users.Api.Observability;
 
 namespace Users.Api.Infrastructure.Services;
 
@@ -15,12 +16,14 @@ public class AuthService
     private readonly UsuarioRepository _usuarios;
     private readonly JwtTokenGenerator _jwt;
     private readonly IPublishEndpoint _publish;
+    private readonly UsersMetrics _metrics;
 
-    public AuthService(UsuarioRepository usuarios, JwtTokenGenerator jwt, IPublishEndpoint publish)
+    public AuthService(UsuarioRepository usuarios, JwtTokenGenerator jwt, IPublishEndpoint publish, UsersMetrics metrics)
     {
         _usuarios = usuarios;
         _jwt = jwt;
         _publish = publish;
+        _metrics = metrics;
     }
 
     public async Task<AuthResponse> RegisterAsync(RegisterRequest request, CancellationToken cancellationToken = default)
@@ -45,6 +48,7 @@ public class AuthService
         await _usuarios.AddAsync(usuario, cancellationToken);
 
         await _publish.Publish(new UserCreatedEvent(usuario.Id, usuario.Email, usuario.Nome), cancellationToken);
+        _metrics.UsuarioRegistrado();
 
         var now = DateTime.UtcNow;
         var token = _jwt.CreateToken(usuario, now);
@@ -56,10 +60,18 @@ public class AuthService
         var email = request.Email.Trim().ToLowerInvariant();
         var usuario = await _usuarios.GetByEmailAsync(email, cancellationToken);
         if (usuario is null)
+        {
+            _metrics.LoginRealizado(sucesso: false);
             throw new UnauthorizedAccessException("Credenciais invalidas.");
+        }
 
         if (!Verify(request.Password, usuario.SenhaHash))
+        {
+            _metrics.LoginRealizado(sucesso: false);
             throw new UnauthorizedAccessException("Credenciais invalidas.");
+        }
+
+        _metrics.LoginRealizado(sucesso: true);
 
         var now = DateTime.UtcNow;
         var token = _jwt.CreateToken(usuario, now);

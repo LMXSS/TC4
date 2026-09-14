@@ -1,125 +1,105 @@
-# FCG — Users API
+# FCG Users API
 
-Microsserviço de **cadastro e autenticação** da plataforma FIAP Cloud Games (FCG).
+Cadastro, autenticação e autorização de usuários da **FIAP Cloud Games**. É o serviço que emite o JWT usado por toda a plataforma — inclusive pelo API Gateway, que valida o token na borda.
 
-Responsabilidades:
+Na Fase 3 ganhou **instrumentação de métricas** no formato Prometheus e endpoints de health para as probes do Kubernetes.
 
-- Registro de usuários (com validação de senha forte) e login.
-- Emissão de **token JWT** consumido pelos demais microsserviços.
-- Publicação do evento **`UserCreatedEvent`** no RabbitMQ após cada cadastro — consumido pelo `Notifications.Api`, que dispara o e-mail de boas-vindas.
+## Responsabilidades
 
-Este repositório é **autocontido**: builda, containeriza e faz deploy sem depender de nenhum outro repositório da plataforma.
-
----
-
-## Estrutura
-
-```
-fcg-users-api/
-├── k8s/                       Manifestos Kubernetes (Deployment, Service, ConfigMap, Secret)
-├── Users.Api/                 Código da API + Dockerfile
-├── FCG.Messaging.Contracts/   Contratos de evento compartilhados entre os microsserviços
-├── Users.Api.sln
-└── README.md
-```
-
-> `FCG.Messaging.Contracts` é a **cópia** dos contratos de mensagem da plataforma. Os quatro microsserviços carregam a mesma cópia: alterar um evento exige replicar a mudança nos quatro repositórios.
-
----
-
-## Pré-requisitos
-
-- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
-- **RabbitMQ** acessível — obrigatório: a API publica evento a cada cadastro.
-
-Subir um RabbitMQ local:
-
-```powershell
-docker run -d --name fcg-rabbit -p 5672:5672 -p 15672:15672 rabbitmq:3.13-management-alpine
-```
-
-Management UI: http://localhost:15672 (`guest` / `guest`)
-
----
-
-## Executar
-
-### Local (.NET SDK)
-
-Da **raiz deste repositório**:
-
-```powershell
-dotnet run --project Users.Api
-```
-
-Swagger (Development): http://localhost:5101/swagger
-
-As migrations são aplicadas automaticamente na subida. Em `Development`, um administrador de demonstração é semeado: `admin@fcg.local` / `Admin@123` (ver `Users.Api/appsettings.Development.json`).
-
-### Docker
-
-Da **raiz deste repositório** (o contexto do build é a raiz, pois o Dockerfile copia a API **e** os contratos):
-
-```powershell
-docker build -f Users.Api/Dockerfile -t fcg/users-api:latest .
-docker run -p 5101:8080 -e RabbitMq__Host=host.docker.internal fcg/users-api:latest
-```
-
-> No Linux, troque `host.docker.internal` pelo IP do host para alcançar o RabbitMQ.
-
-A imagem `fcg/users-api:latest` é a que o repositório de orquestração (`fcg-platform`) espera encontrar no `docker-compose`, e a mesma referenciada pelo `k8s/deployment.yaml`.
-
----
-
-## Variáveis de ambiente
-
-| Variável | Descrição | Padrão |
-|----------|-----------|--------|
-| `ConnectionStrings__DefaultConnection` | Banco SQLite. No container, aponte para o volume: `Data Source=/app/data/users.db`. | `Data Source=users.db` |
-| `Jwt__Key` | Chave simétrica de assinatura, **mínimo 32 caracteres**. ⚠️ **Deve ser idêntica à do Catalog API** — senão o token emitido aqui é rejeitado lá. | *(valor de dev; trocar)* |
-| `Jwt__Issuer` | Emissor do token. Precisa bater com o Catalog. | `FCG` |
-| `Jwt__Audience` | Audiência do token. Precisa bater com o Catalog. | `FCG` |
-| `Jwt__ExpiresMinutes` | Validade do token, em minutos. | `120` |
-| `RabbitMq__Host` | Host do broker: `localhost` (dev), `rabbitmq` (compose/K8s), `host.docker.internal` (container isolado). | `localhost` |
-| `RabbitMq__Username` | Usuário do RabbitMQ. | `guest` |
-| `RabbitMq__Password` | Senha do RabbitMQ. | `guest` |
-| `ASPNETCORE_ENVIRONMENT` | `Development` habilita Swagger e o seed do admin. | `Production` (no container) |
-| `ASPNETCORE_URLS` | Porta de escuta dentro do container. | `http://+:8080` |
-| `Seed__AdminEmail` | *(Development)* E-mail do admin semeado. | `admin@fcg.local` |
-| `Seed__AdminPassword` | *(Development)* Senha do admin semeado. | `Admin@123` |
-| `Seed__AdminName` | *(Development)* Nome do admin semeado. | `Administrador` |
-
-### Portas
-
-| Contexto | Endereço |
-|----------|----------|
-| `dotnet run` (Development) | http://localhost:5101 |
-| Docker / compose | host `5101` → container `8080` |
-| Service do Kubernetes | `users-api:80` → container `8080` |
-
----
-
-## Kubernetes
-
-Manifestos em [`k8s/`](k8s): `deployment.yaml`, `service.yaml`, `configmap.yaml`, `secret.yaml`.
-
-```powershell
-kubectl apply -f k8s/
-kubectl get pods -l app=users-api
-kubectl port-forward svc/users-api 5101:80
-```
-
-O Deployment usa `image: fcg/users-api:latest` com `imagePullPolicy: IfNotPresent` — **builde a imagem localmente antes** (seção Docker) para o cluster local encontrá-la.
-
-Pré-requisito: um RabbitMQ acessível pelo Service `rabbitmq` no cluster (o manifesto vive no repositório `fcg-platform`).
-
-> ⚠️ **Antes de produção:** troque `jwt-key` em `k8s/secret.yaml` — o valor versionado é de desenvolvimento e é o mesmo do Catalog API.
-
----
+| Área | O quê |
+|---|---|
+| Autenticação | Registro, login e emissão de JWT (HS256) |
+| Persistência | SQLite via EF Core |
+| Mensageria | Publica `UserCreatedEvent` no cadastro |
+| Observabilidade | Expõe `/metrics` (OpenTelemetry) |
 
 ## Endpoints
 
-| Método | Rota | Descrição |
-|--------|------|-----------|
-| `POST` | `/api/auth/register` | Cadastra usuário e publica `UserCreatedEvent`. |
-| `POST` | `/api/auth/login` | Autentica e devolve o token JWT. |
+| Método | Rota | Auth | Descrição |
+|---|---|---|---|
+| `POST` | `/api/auth/register` | — | Cadastra o usuário, publica `UserCreatedEvent` e devolve o token |
+| `POST` | `/api/auth/login` | — | Autentica e devolve o token |
+| `GET` | `/health/live` | — | Processo de pé |
+| `GET` | `/health/ready` | — | Banco respondendo |
+| `GET` | `/metrics` | — | Métricas no formato Prometheus |
+
+### O token
+
+Assinado em **HS256** com `Jwt:Key`, contendo:
+
+| Claim | Conteúdo |
+|---|---|
+| `sub` | Id do usuário |
+| `email` | E-mail |
+| `name` | Nome |
+| `role` | `Usuario` ou `Administrador` |
+| `iss` / `aud` | `Jwt:Issuer` / `Jwt:Audience` |
+
+O claim `iss` é a chave que liga o token ao consumer configurado no Kong. **`Jwt:Key` precisa ser idêntica na Users API, na Catalog API e no gateway** — se divergir, o Kong rejeita todo token válido com *Invalid signature*.
+
+## Variáveis de ambiente
+
+| Variável | Padrão | Descrição |
+|---|---|---|
+| `ConnectionStrings__DefaultConnection` | `Data Source=users.db` | SQLite |
+| `Jwt__Key` | — | Chave de assinatura, mínimo 32 caracteres |
+| `Jwt__Issuer` / `Jwt__Audience` | `FCG` / `FCG` | Emissor e audiência |
+| `Jwt__ExpiresMinutes` | `120` | Validade do token |
+| `RabbitMq__Host` / `__Username` / `__Password` | `localhost` / `guest` / `guest` | Broker |
+| `Seed__AdminEmail` / `__AdminPassword` / `__AdminName` | — | Admin criado no start (apenas em Development) |
+
+## Métricas expostas
+
+Além de `http_server_request_duration_seconds` (latência, throughput e status code) e das métricas de runtime .NET:
+
+| Métrica | Labels |
+|---|---|
+| `fcg_users_registered_total` | — |
+| `fcg_users_logins_total` | `result` (success/failure) |
+
+## Executando
+
+### Stack completa (recomendado)
+
+```powershell
+cd ..\fcg-platform
+docker compose up -d --build
+```
+
+Acesso pelo gateway: <http://localhost:8000/api/auth/login>.
+
+### Somente este serviço
+
+```powershell
+docker run -d --name fcg-rabbit -p 5672:5672 -p 15672:15672 rabbitmq:3.13-management-alpine
+
+cd Users.Api
+dotnet run
+```
+
+Swagger em <http://localhost:5101/swagger>. Em Development o admin de seed é `admin@fcg.local` / `Admin@123` (ver `appsettings.Development.json`).
+
+### Docker
+
+```powershell
+# contexto = raiz do repositório
+docker build -t fcg/users-api:latest . -f Users.Api/Dockerfile
+```
+
+## Kubernetes
+
+Manifestos em [`k8s/`](k8s): `Deployment`, `Service`, `ConfigMap` e `Secret`.
+
+```powershell
+kubectl apply -f k8s/
+```
+
+O Deployment traz as anotações `prometheus.io/scrape` para entrar na coleta automática, e probes apontando para `/health/ready` e `/health/live`.
+
+## Repositórios relacionados
+
+| Repositório | Papel |
+|---|---|
+| [`fcg-platform`](https://github.com/VHMoschini/fcg-platform) | Orquestração — comece por aqui |
+| [`fcg-catalog-api`](https://github.com/VHMoschini/fcg-catalog-api) | Consome o token emitido aqui |
+| [`fcg-notifications-function`](https://github.com/VHMoschini/fcg-notifications-function) | Consome `UserCreatedEvent` e envia as boas-vindas |
