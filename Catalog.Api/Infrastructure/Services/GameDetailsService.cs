@@ -7,6 +7,7 @@ using Catalog.Api.Domain.Entities;
 using Catalog.Api.Infrastructure.Caching;
 using Catalog.Api.Infrastructure.Mongo;
 using Catalog.Api.Infrastructure.Persistence;
+using Catalog.Api.Infrastructure.Search;
 using Catalog.Api.Observability;
 using Microsoft.EntityFrameworkCore;
 using MongoDB.Driver;
@@ -21,27 +22,33 @@ namespace Catalog.Api.Infrastructure.Services;
 /// descricao, midias, tags, requisitos por plataforma — que mudaria o schema relacional a
 /// cada jogo novo. Titulo, genero, preco e situacao ficam denormalizados no documento para
 /// que a busca aconteca inteiramente no Mongo, sem join entre bancos.
+///
+/// Fase 4: toda escrita aqui tambem atualiza o indice do Elasticsearch (GameSearchIndexer),
+/// que passa a ser o motor da busca avancada. A busca no Mongo continua como fallback.
 /// </summary>
-public class GameDetailsService
+public class GameDetailsService : ICatalogTextSearch
 {
     private readonly CatalogDbContext _db;
     private readonly CatalogMongoContext _mongo;
     private readonly CatalogCache _cache;
     private readonly ReviewService _reviews;
     private readonly CatalogMetrics _metrics;
+    private readonly GameSearchIndexer _indexer;
 
     public GameDetailsService(
         CatalogDbContext db,
         CatalogMongoContext mongo,
         CatalogCache cache,
         ReviewService reviews,
-        CatalogMetrics metrics)
+        CatalogMetrics metrics,
+        GameSearchIndexer indexer)
     {
         _db = db;
         _mongo = mongo;
         _cache = cache;
         _reviews = reviews;
         _metrics = metrics;
+        _indexer = indexer;
     }
 
     public Task<GameDetailsResponse> GetAsync(Guid gameId, CancellationToken cancellationToken = default) =>
@@ -114,6 +121,7 @@ public class GameDetailsService
             cancellationToken);
         _metrics.MongoOperacao("game_details_upsert", stopwatch.Elapsed);
 
+        await _indexer.IndexarAsync(jogo, documento, cancellationToken);
         await InvalidarAsync(gameId, cancellationToken);
 
         var avaliacoes = await _reviews.GetSummaryAsync(gameId, cancellationToken);
@@ -122,7 +130,7 @@ public class GameDetailsService
 
     /// <summary>
     /// Mantem os campos denormalizados do documento alinhados com o SQLite depois de
-    /// criar, atualizar, inativar ou reativar um jogo.
+    /// criar, atualizar, inativar ou reativar um jogo — e reindexa o jogo no Elasticsearch.
     /// </summary>
     public async Task SyncFromRelationalAsync(Jogo jogo, CancellationToken cancellationToken = default)
     {
@@ -142,6 +150,7 @@ public class GameDetailsService
             cancellationToken);
         _metrics.MongoOperacao("game_details_sync", stopwatch.Elapsed);
 
+        await _indexer.IndexarAsync(jogo, cancellationToken: cancellationToken);
         await InvalidarAsync(jogo.Id, cancellationToken);
     }
 

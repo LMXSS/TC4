@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Catalog.Api.Infrastructure.Search;
 using Microsoft.EntityFrameworkCore;
 
 namespace Catalog.Api.Middleware;
@@ -33,6 +34,7 @@ public class ExceptionHandlingMiddleware
         {
             UnauthorizedAccessException => (StatusCodes.Status401Unauthorized, ex.Message),
             KeyNotFoundException => (StatusCodes.Status404NotFound, ex.Message),
+            SearchUnavailableException => (StatusCodes.Status503ServiceUnavailable, "Motor de busca indisponivel."),
             InvalidOperationException => (StatusCodes.Status400BadRequest, ex.Message),
             DbUpdateException => (StatusCodes.Status400BadRequest, "Erro ao persistir dados."),
             _ => (StatusCodes.Status500InternalServerError, "Erro interno.")

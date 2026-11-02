@@ -3,6 +3,7 @@ using Catalog.Api.Consumers;
 using Catalog.Api.Infrastructure.Caching;
 using Catalog.Api.Infrastructure.Mongo;
 using Catalog.Api.Infrastructure.Persistence;
+using Catalog.Api.Infrastructure.Search;
 using Catalog.Api.Infrastructure.Security;
 using Catalog.Api.Infrastructure.Services;
 using Catalog.Api.Middleware;
@@ -10,7 +11,6 @@ using Catalog.Api.Observability;
 using MongoDB.Driver;
 using MassTransit;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
@@ -44,10 +44,8 @@ builder.Services.AddSwaggerGen(options =>
     });
 });
 
-var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
-    ?? throw new InvalidOperationException("DefaultConnection ausente.");
-connectionString = ResolveSqlitePath(connectionString, builder.Environment.ContentRootPath);
-builder.Services.AddDbContext<CatalogDbContext>(o => o.UseSqlite(connectionString));
+// SQLite no desenvolvimento local; PostgreSQL compartilhado entre as replicas em producao.
+builder.Services.AddFcgDatabase<CatalogDbContext>(builder.Configuration, builder.Environment.ContentRootPath);
 
 builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptions.SectionName));
 
@@ -79,9 +77,18 @@ else
 }
 builder.Services.AddScoped<CatalogCache>();
 
+// ---- Busca avancada (Elasticsearch / OpenSearch) ----
+builder.Services.Configure<ElasticsearchOptions>(builder.Configuration.GetSection(ElasticsearchOptions.SectionName));
+builder.Services.AddHttpClient<IGameSearchIndex, ElasticsearchGameIndex>((sp, http) =>
+    ElasticsearchGameIndex.Configure(http, sp.GetRequiredService<IOptions<ElasticsearchOptions>>().Value));
+builder.Services.AddScoped<GameSearchIndexer>();
+builder.Services.AddScoped<GameSearchService>();
+builder.Services.AddHostedService<SearchIndexInitializer>();
+
 builder.Services.AddScoped<GameService>();
 builder.Services.AddScoped<LibraryService>();
 builder.Services.AddScoped<GameDetailsService>();
+builder.Services.AddScoped<ICatalogTextSearch>(sp => sp.GetRequiredService<GameDetailsService>());
 builder.Services.AddScoped<ReviewService>();
 
 var jwt = builder.Configuration.GetSection(JwtOptions.SectionName).Get<JwtOptions>()
@@ -112,8 +119,10 @@ builder.Services.AddAuthorization();
 builder.Services.AddFcgObservability();
 
 var rabbitHost = builder.Configuration["RabbitMq:Host"] ?? "localhost";
-var rabbitUser = builder.Configuration["RabbitMq:Username"] ?? "guest";
-var rabbitPass = builder.Configuration["RabbitMq:Password"] ?? "guest";
+// Credenciais do broker chegam por variavel de ambiente (Secret do Kubernetes);
+// nenhuma senha fica no codigo. Sem elas, o MassTransit usa o padrao do broker local.
+var rabbitUser = builder.Configuration["RabbitMq:Username"];
+var rabbitPass = builder.Configuration["RabbitMq:Password"];
 
 builder.Services.AddMassTransit(x =>
 {
@@ -122,8 +131,11 @@ builder.Services.AddMassTransit(x =>
     {
         cfg.Host(rabbitHost, "/", h =>
         {
-            h.Username(rabbitUser);
-            h.Password(rabbitPass);
+            if (!string.IsNullOrWhiteSpace(rabbitUser))
+            {
+                h.Username(rabbitUser);
+                h.Password(rabbitPass ?? string.Empty);
+            }
         });
         cfg.ConfigureEndpoints(context);
     });
@@ -134,7 +146,8 @@ var app = builder.Build();
 await using (var scope = app.Services.CreateAsyncScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
-    await db.Database.MigrateAsync();
+    await DatabaseSetup.InitializeDatabaseAsync(
+        db, app.Configuration, app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Database"));
 }
 
 if (app.Environment.IsDevelopment())
@@ -159,9 +172,9 @@ app.MapGet("/health/ready", async (CatalogDbContext db, CatalogMongoContext mong
     var relacional = await db.Database.CanConnectAsync(ct);
     var documental = await PingMongoAsync(mongo, ct);
     return relacional && documental
-        ? Results.Ok(new { status = "ready", service = "catalog-api", sqlite = true, mongo = true })
+        ? Results.Ok(new { status = "ready", service = "catalog-api", relacional = true, mongo = true })
         : Results.Json(
-            new { status = "degraded", service = "catalog-api", sqlite = relacional, mongo = documental },
+            new { status = "degraded", service = "catalog-api", relacional, mongo = documental },
             statusCode: StatusCodes.Status503ServiceUnavailable);
 }).WithTags("Health").AllowAnonymous();
 
@@ -179,14 +192,4 @@ static async Task<bool> PingMongoAsync(CatalogMongoContext mongo, CancellationTo
     {
         return false;
     }
-}
-
-static string ResolveSqlitePath(string connectionString, string contentRoot)
-{
-    var b = new SqliteConnectionStringBuilder(connectionString);
-    var ds = b.DataSource;
-    if (string.IsNullOrEmpty(ds) || ds.Equals(":memory:", StringComparison.OrdinalIgnoreCase) || Path.IsPathRooted(ds))
-        return connectionString;
-    b.DataSource = Path.GetFullPath(Path.Combine(contentRoot, ds));
-    return b.ConnectionString;
 }
