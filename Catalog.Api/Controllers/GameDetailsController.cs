@@ -41,24 +41,4 @@ public class GameDetailsController : ControllerBase
         var details = await _details.UpsertAsync(id, request, cancellationToken);
         return Ok(details);
     }
-
-    /// <summary>
-    /// Busca paginada no catalogo expandido: texto livre (titulo, descricao e tags),
-    /// filtro por tag, genero e preco maximo.
-    /// </summary>
-    [HttpGet("search")]
-    [AllowAnonymous]
-    [ProducesResponseType(typeof(PagedResponse<GameSearchItem>), StatusCodes.Status200OK)]
-    public async Task<ActionResult<PagedResponse<GameSearchItem>>> Search(
-        [FromQuery] string? q,
-        [FromQuery] string? tag,
-        [FromQuery] string? genero,
-        [FromQuery] decimal? precoMaximo,
-        [FromQuery] int pagina = 1,
-        [FromQuery] int tamanho = 20,
-        CancellationToken cancellationToken = default)
-    {
-        var resultado = await _details.SearchAsync(q, tag, genero, precoMaximo, pagina, tamanho, cancellationToken);
-        return Ok(resultado);
-    }
 }

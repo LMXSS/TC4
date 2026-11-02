@@ -6,6 +6,15 @@ metadata:
     app: catalog-api
 spec:
   replicas: 2
+  revisionHistoryLimit: 5
+  # Rolling update sem downtime: sobe um pod novo por vez (maxSurge 1) e so derruba um
+  # antigo depois que o novo passa no readinessProbe (maxUnavailable 0). Se a imagem nova
+  # nao ficar pronta, o rollout para e os pods antigos continuam atendendo.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: catalog-api
@@ -14,14 +23,16 @@ spec:
       labels:
         app: catalog-api
       annotations:
-        # Faz o Prometheus coletar /metrics deste pod (Fase 3, Opcao A).
         prometheus.io/scrape: "true"
         prometheus.io/port: "8080"
         prometheus.io/path: "/metrics"
     spec:
+      terminationGracePeriodSeconds: 30
       containers:
         - name: catalog-api
-          image: fcg/catalog-api:latest
+          # Nome logico: o kustomization.yaml troca pelo registry e pela tag certos
+          # (fcg/catalog-api:latest localmente; <acr>.azurecr.io/catalog-api:<sha> na pipeline).
+          image: catalog-api
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
@@ -29,6 +40,8 @@ spec:
           envFrom:
             - configMapRef:
                 name: catalog-api-config
+          # Credenciais injetadas em tempo de execucao a partir do Secret catalog-api-secret,
+          # criado pela pipeline do fcg-platform com os GitHub Secrets. Nenhum valor aqui.
           env:
             - name: Jwt__Key
               valueFrom:
@@ -60,30 +73,40 @@ spec:
                 secretKeyRef:
                   name: catalog-api-secret
                   key: redis-connection-string
-          # /health/ready confirma SQLite e MongoDB; enquanto um deles nao responde,
-          # o pod fica fora do balanceamento em vez de devolver erro ao usuario.
+            - name: Elasticsearch__Username
+              valueFrom:
+                secretKeyRef:
+                  name: catalog-api-secret
+                  key: elasticsearch-username
+            - name: Elasticsearch__Password
+              valueFrom:
+                secretKeyRef:
+                  name: catalog-api-secret
+                  key: elasticsearch-password
+          # /health/ready confirma o banco relacional e o MongoDB; enquanto um deles nao
+          # responde, o pod fica fora do balanceamento em vez de devolver erro.
           readinessProbe:
             httpGet:
               path: /health/ready
               port: 8080
             initialDelaySeconds: 10
-            periodSeconds: 10
-            failureThreshold: 6
+            periodSeconds: 5
+            failureThreshold: 12
           livenessProbe:
             httpGet:
               path: /health/live
               port: 8080
             initialDelaySeconds: 30
             periodSeconds: 20
+          # Da tempo ao Service de tirar o pod do balanceamento antes do SIGTERM, para que
+          # nenhuma requisicao em voo caia durante o rolling update.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
           resources:
             requests:
               cpu: 100m
-              memory: 160Mi
+              memory: 192Mi
             limits:
               memory: 512Mi
-          volumeMounts:
-            - name: data
-              mountPath: /app/data
-      volumes:
-        - name: data
-          emptyDir: {}

@@ -46,6 +46,9 @@ public class CatalogMetrics
     private readonly Counter<long> _comprasConfirmadas;
     private readonly Counter<long> _avaliacoesRegistradas;
     private readonly Histogram<double> _mongoDuration;
+    private readonly Counter<long> _searchRequests;
+    private readonly Histogram<double> _searchDuration;
+    private readonly Counter<long> _searchIndexOperations;
 
     public CatalogMetrics(IMeterFactory meterFactory)
     {
@@ -62,6 +65,14 @@ public class CatalogMetrics
             "fcg_catalog_reviews", unit: null, description: "Avaliacoes de jogos gravadas no MongoDB.");
         _mongoDuration = meter.CreateHistogram<double>(
             "fcg_catalog_mongo_operation_duration", unit: "s", description: "Duracao das operacoes no MongoDB por tipo.");
+        _searchRequests = meter.CreateCounter<long>(
+            "fcg_catalog_search_requests", unit: null,
+            description: "Buscas atendidas por motor (elasticsearch, ou mongodb quando o Elasticsearch esta fora).");
+        _searchDuration = meter.CreateHistogram<double>(
+            "fcg_catalog_search_duration", unit: "s", description: "Duracao das buscas no motor de busca, sem contar o cache.");
+        _searchIndexOperations = meter.CreateCounter<long>(
+            "fcg_catalog_search_index_operations", unit: null,
+            description: "Operacoes de indexacao no Elasticsearch por tipo e resultado.");
     }
 
     public void CacheHit(string cacheKind) => _cacheRequests.Add(1,
@@ -80,4 +91,15 @@ public class CatalogMetrics
 
     public void MongoOperacao(string operation, TimeSpan elapsed) =>
         _mongoDuration.Record(elapsed.TotalSeconds, new KeyValuePair<string, object?>("operation", operation));
+
+    public void Busca(string engine, TimeSpan elapsed)
+    {
+        var tag = new KeyValuePair<string, object?>("engine", engine);
+        _searchRequests.Add(1, tag);
+        _searchDuration.Record(elapsed.TotalSeconds, tag);
+    }
+
+    public void Indexacao(string operation, bool sucesso, int quantidade = 1) => _searchIndexOperations.Add(quantidade,
+        new KeyValuePair<string, object?>("operation", operation),
+        new KeyValuePair<string, object?>("result", sucesso ? "ok" : "fail"));
 }

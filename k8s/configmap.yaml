@@ -5,9 +5,14 @@ metadata:
   labels:
     app: catalog-api
 data:
-  ASPNETCORE_ENVIRONMENT: "Development"
+  ASPNETCORE_ENVIRONMENT: "Production"
   ASPNETCORE_URLS: "http://+:8080"
   RabbitMq__Host: "rabbitmq"
+
+  # Banco relacional compartilhado entre as replicas (k8s/postgres.yaml no fcg-platform).
+  # A connection string, com a senha, vem do Secret.
+  Database__Provider: "Postgres"
+
   Jwt__Issuer: "FCG"
   Jwt__Audience: "FCG"
 
@@ -23,3 +28,9 @@ data:
   Cache__GameDetailsSeconds: "300"
   Cache__ReviewsSeconds: "120"
   Cache__SearchSeconds: "90"
+
+  # Busca avancada — Elasticsearch no proprio cluster (k8s/elasticsearch.yaml no fcg-platform).
+  Elasticsearch__Enabled: "true"
+  Elasticsearch__Url: "http://elasticsearch:9200"
+  Elasticsearch__IndexName: "fcg-games"
+  Elasticsearch__ReindexOnStartupIfEmpty: "true"
