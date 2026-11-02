@@ -7,19 +7,6 @@
 # Gere ou atualize o ConfigMap com:
 #   kubectl create configmap kong-declarative --from-file=kong.yml=gateway/kong.yml --dry-run=client -o yaml | kubectl apply -f -
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: kong-secret
-  labels:
-    app: kong
-type: Opaque
-stringData:
-  # Precisa ser identica a Jwt__Key da Users API e da Catalog API.
-  # Em producao, use um gerenciador de segredos (Key Vault, Secrets Manager,
-  # External Secrets Operator) em vez de um valor fixo no manifesto.
-  fcg-jwt-key: "CHANGE_ME_DEV_KEY_MIN_32_CHARS_LONG!!"
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -104,8 +91,11 @@ spec:
           configMap:
             name: kong-declarative
 ---
-# Porta de entrada da plataforma. Em Docker Desktop e Minikube o NodePort responde
-# em http://localhost:30080; em nuvem, troque por type: LoadBalancer.
+# Porta de entrada da plataforma (Fase 4).
+#
+# type: LoadBalancer — no AKS o cloud controller provisiona um Azure Load Balancer com IP
+# publico e o liga a este Service; e o unico ponto do cluster exposto a internet. O IP sai
+# em: kubectl get svc kong-proxy. No Docker Desktop o mesmo Service responde em localhost.
 apiVersion: v1
 kind: Service
 metadata:
@@ -113,14 +103,13 @@ metadata:
   labels:
     app: kong
 spec:
-  type: NodePort
+  type: LoadBalancer
   selector:
     app: kong
   ports:
     - name: proxy
-      port: 8000
+      port: 80
       targetPort: 8000
-      nodePort: 30080
 ---
 # Admin API e endpoint de metricas: apenas dentro do cluster.
 apiVersion: v1

@@ -5,10 +5,12 @@ metadata:
   labels:
     app: rabbitmq
 data:
+  # Fase 4: sem usuario fixo. O usuario padrao e criado a partir de RABBITMQ_DEFAULT_USER/PASS,
+  # lidos do Secret rabbitmq-secret. Por isso as definicoes NAO sao carregadas no boot
+  # (load_definitions impede a criacao do usuario padrao): elas sao importadas logo depois
+  # que o no sobe, pelo hook postStart do container.
   rabbitmq.conf: |
-    load_definitions = /etc/rabbitmq/definitions.json
-    default_user = guest
-    default_pass = guest
+    loopback_users = none
   # Declara as filas notifications-* e os bindings com os exchanges fanout do
   # MassTransit. Sao essas filas que acionam a funcao serverless.
   definitions.json: |
@@ -79,9 +81,22 @@ spec:
               name: mgmt
           env:
             - name: RABBITMQ_DEFAULT_USER
-              value: guest
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-secret
+                  key: username
             - name: RABBITMQ_DEFAULT_PASS
-              value: guest
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-secret
+                  key: password
+          lifecycle:
+            postStart:
+              exec:
+                command:
+                  - sh
+                  - -c
+                  - rabbitmqctl await_startup --timeout 180 && rabbitmqctl import_definitions /etc/rabbitmq/definitions.json
           volumeMounts:
             - name: config
               mountPath: /etc/rabbitmq/rabbitmq.conf

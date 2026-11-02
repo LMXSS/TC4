@@ -10,14 +10,14 @@ Como cada parte da plataforma escala de forma independente, e como demonstrar is
 |---|---|---|
 | **Kong** | Sim | Stateless em modo DB-less: cada réplica lê a mesma configuração declarativa |
 | **Users API** | Sim | Stateless (JWT), banco próprio |
-| **Catalog API** | Sim* | API stateless; MongoDB e Redis são compartilhados entre as réplicas |
+| **Catalog API** | Sim* | API stateless; PostgreSQL, MongoDB, Redis e Elasticsearch são compartilhados entre as réplicas |
 | **Payments API** | Sim, ideal | Consumidor de fila; idempotência por `OrderId` |
 | **Notifications Function** | Sim, por definição | O host de Functions só materializa a função quando há mensagem |
 | **MongoDB** | Réplica/sharding em produção | Uma instância no ambiente local |
 | **Redis** | Cluster em produção | Uma instância no ambiente local; falha é degradação, não queda |
 | **RabbitMQ** | Cluster em produção | A fila distribui a carga entre os consumidores |
 
-\* O SQLite do Catalog é local ao pod. Em produção, trocar por um banco relacional compartilhado (PostgreSQL, SQL Server). MongoDB e Redis já são compartilhados e não impedem múltiplas réplicas.
+\* Até a Fase 3 o SQLite do Catalog era local ao pod. **Na Fase 4 o relacional passou a ser um PostgreSQL compartilhado** (`k8s/postgres.yaml`), então Users, Catalog e Payments escalam horizontalmente sem divergir dados. MongoDB, Redis e Elasticsearch também são compartilhados entre as réplicas.
 
 ```mermaid
 flowchart LR

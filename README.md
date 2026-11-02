@@ -1,62 +1,80 @@
 # FCG Platform — orquestração da FIAP Cloud Games
 
-Repositório central da plataforma. Reúne o `docker-compose`, os manifestos Kubernetes, a configuração do API Gateway e a stack de observabilidade dos microsserviços da FCG.
+Repositório central da plataforma. Reúne a infraestrutura como código da Azure, os manifestos Kubernetes, a pipeline da plataforma, a configuração do API Gateway e a stack de observabilidade dos microsserviços da FCG.
 
-> **Fase 3 — Microsserviços e Clean Architecture.** Esta fase adiciona API Gateway, função serverless, observabilidade, persistência poliglota (MongoDB) e cache distribuído (Redis) à arquitetura de microsserviços entregue na Fase 2.
+> **Fase 4 — Automação, performance e portabilidade.** A plataforma sai do cluster local e passa a rodar no **Azure Kubernetes Service (AKS)**, com imagens privadas no **Azure Container Registry (ACR)**, deploy contínuo por **GitHub Actions** com rolling update sem downtime, **busca avançada com Elasticsearch**, banco relacional compartilhado (**PostgreSQL**) e **nenhuma credencial em código ou YAML**.
 
 ---
 
 ## Índice
 
-1. [Arquitetura](#arquitetura)
-2. [Repositórios](#repositórios)
-3. [Decisões da Fase 3](#decisões-da-fase-3)
-4. [Pré-requisitos](#pré-requisitos)
-5. [Subindo com Docker Compose](#subindo-com-docker-compose)
-6. [Roteiro de demonstração](#roteiro-de-demonstração)
-7. [Deploy no Kubernetes](#deploy-no-kubernetes)
-8. [API Gateway (Kong)](#api-gateway-kong)
-9. [Observabilidade (Prometheus + Grafana)](#observabilidade-prometheus--grafana)
-10. [Persistência poliglota e cache](#persistência-poliglota-e-cache)
-11. [Função serverless](#função-serverless)
-12. [Referência de endpoints](#referência-de-endpoints)
-13. [Solução de problemas](#solução-de-problemas)
+1. [O que mudou na Fase 4](#o-que-mudou-na-fase-4)
+2. [Arquitetura](#arquitetura)
+3. [Repositórios](#repositórios)
+4. [Decisões da Fase 4](#decisões-da-fase-4)
+5. [Subindo na Azure (AKS)](#subindo-na-azure-aks)
+6. [CI/CD com GitHub Actions](#cicd-com-github-actions)
+7. [Segurança e gestão de segredos](#segurança-e-gestão-de-segredos)
+8. [Persistência poliglota e cache](#persistência-poliglota-e-cache)
+9. [Busca avançada com Elasticsearch](#busca-avançada-com-elasticsearch)
+10. [Roteiro de demonstração em produção](#roteiro-de-demonstração-em-produção)
+11. [Ambiente local](#ambiente-local)
+12. [API Gateway (Kong)](#api-gateway-kong)
+13. [Observabilidade (Prometheus + Grafana)](#observabilidade-prometheus--grafana)
+14. [Função serverless](#função-serverless)
+15. [Referência de endpoints](#referência-de-endpoints)
+16. [Custos e limpeza](#custos-e-limpeza)
+17. [Solução de problemas](#solução-de-problemas)
+
+---
+
+## O que mudou na Fase 4
+
+| Gargalo do enunciado | Solução |
+|---|---|
+| **Ambiente de produção gerenciado** | AKS provisionado por **Bicep** ([`infra/azure/main.bicep`](infra/azure/main.bicep)), imagens no **ACR** privado (sem usuário admin; o AKS puxa por identidade gerenciada), gateway exposto por **Azure Load Balancer** |
+| **Automação de entrega** | Uma pipeline por serviço (**Build & Test → Imagem com tag versionada → Trivy → Push no ACR → Rolling Update no AKS**, com rollback automático) e uma pipeline da plataforma. Login na Azure por **OIDC**, sem senha guardada |
+| **Performance e latência** | **Elasticsearch** para a busca (fuzzy + relevância), **Redis** na frente das consultas caras, **MongoDB** para dados flexíveis e de alto volume, **PostgreSQL** compartilhado entre as réplicas |
+| **Segurança** | **Zero hardcoded credentials**: os `secret.yaml` com valores saíram dos repositórios; os Secrets do Kubernetes são criados pela pipeline a partir dos GitHub Secrets. MongoDB, Redis, RabbitMQ e Elasticsearch passaram a exigir autenticação |
+
+O que já vinha da Fase 3 e continua: Kong como gateway, a função serverless de notificações, a observabilidade com Prometheus + Grafana, MongoDB e Redis no Catalog.
 
 ---
 
 ## Arquitetura
 
 ```
-                        ┌──────────────────────────────────┐
-     Cliente  ─────────▶│   Kong API Gateway  :8000        │
-                        │   rota · JWT · rate limit        │
-                        └───────┬───────────────┬──────────┘
-                                │               │
-                     /api/auth  │               │  /api/games · /api/users/me
-                                ▼               ▼
-                        ┌───────────────┐  ┌──────────────────┐
-                        │   Users API   │  │   Catalog API    │
-                        │  SQLite + JWT │  │ SQLite + MongoDB │
-                        └───────┬───────┘  └────┬────────┬────┘
-                                │               │        │
-                                │               │        ├──▶ MongoDB  (catálogo expandido, avaliações)
-                                │               │        └──▶ Redis    (cache distribuído)
-                                │               │
-                                ▼               ▼
-                        ┌──────────────────────────────────┐
-                        │        RabbitMQ (MassTransit)    │
-                        └───┬──────────────┬───────────────┘
-                            │              │
-              OrderPlaced   │              │  UserCreated / PaymentProcessed
-                            ▼              ▼
-                   ┌────────────────┐  ┌──────────────────────────┐
-                   │  Payments API  │  │  Notifications Function  │
-                   │   (simulação)  │  │  Azure Functions + SMTP  │
-                   └────────────────┘  └────────────┬─────────────┘
-                                                    ▼
-                                                 Mailpit
-
-     Prometheus coleta /metrics de Kong, Users, Catalog e Payments → Grafana
+                          Internet
+                             │
+                 ┌───────────▼────────────┐
+                 │  Azure Load Balancer   │  IP público (Service kong-proxy, type LoadBalancer)
+                 └───────────┬────────────┘
+  ┌──────────────────────────┼─────────────────────── AKS ──────────────────────────────────┐
+  │              ┌───────────▼────────────┐                                                  │
+  │              │   Kong API Gateway     │  rota · JWT · rate limit · métricas              │
+  │              └─────┬────────────┬─────┘                                                  │
+  │        /api/auth   │            │  /api/games · /api/games/search · /api/users/me        │
+  │              ┌─────▼─────┐ ┌────▼──────────────┐                                         │
+  │              │ Users API │ │   Catalog API     │──▶ Elasticsearch  (busca fuzzy)         │
+  │              │  2..5 pods│ │    2..5 pods      │──▶ MongoDB        (catálogo expandido)  │
+  │              └─────┬─────┘ └────┬──────────────┘──▶ Redis          (cache distribuído)   │
+  │                    │            │                                                        │
+  │                    ├────────────┴──────────▶ PostgreSQL (fcg_users · fcg_catalog · fcg_payments)
+  │                    ▼            ▼                                                        │
+  │              ┌────────────────────────┐                                                  │
+  │              │ RabbitMQ (MassTransit) │                                                  │
+  │              └──────┬───────────┬─────┘                                                  │
+  │        OrderPlaced  │           │  UserCreated / PaymentProcessed                        │
+  │              ┌──────▼──────┐ ┌──▼────────────────────┐                                   │
+  │              │ Payments API│ │ Notifications Function│──▶ Mailpit                        │
+  │              └─────────────┘ └───────────────────────┘                                   │
+  │                                                                                          │
+  │   Prometheus (descoberta por anotação) ──▶ Grafana          Container Insights ──▶ portal│
+  └──────────────────────────────────────────────────────────────────────────────────────────┘
+            ▲  kubectl apply -k (rolling update)            ▲  imagens privadas (AcrPull)
+            │                                               │
+     GitHub Actions ── push da imagem versionada ──▶ Azure Container Registry
+        (OIDC)
 ```
 
 ### Fluxos orientados a eventos
@@ -71,472 +89,367 @@ Repositório central da plataforma. Reúne o `docker-compose`, os manifestos Kub
 3. A Catalog API consome: se aprovado, adiciona o jogo à biblioteca.
 4. A fila `notifications-payment-processed` aciona a **função serverless**, que envia confirmação ou aviso de recusa.
 
+**Cadastro ou edição de jogo (novo na Fase 4)**
+1. `POST`/`PUT /api/games` grava no PostgreSQL (fonte da verdade).
+2. O documento do MongoDB é sincronizado e o jogo é **reindexado no Elasticsearch** na mesma requisição.
+3. O cache de buscas no Redis é invalidado por troca de token de versão.
+
 ---
 
 ## Repositórios
 
-| Repositório | Conteúdo |
-|---|---|
-| [`fcg-platform`](https://github.com/VHMoschini/fcg-platform) | **Este.** Compose, Kubernetes, Kong, Prometheus/Grafana |
-| [`fcg-users-api`](https://github.com/VHMoschini/fcg-users-api) | Cadastro, autenticação e emissão de JWT |
-| [`fcg-catalog-api`](https://github.com/VHMoschini/fcg-catalog-api) | Catálogo, catálogo expandido, avaliações e biblioteca |
-| [`fcg-payments-api`](https://github.com/VHMoschini/fcg-payments-api) | Simulação de pagamento |
-| [`fcg-notifications-function`](https://github.com/VHMoschini/fcg-notifications-function) | **Novo na Fase 3.** Notificações como Azure Function |
-| [`fcg-notifications-api`](https://github.com/VHMoschini/fcg-notifications-api) | *Substituído pela função serverless. Mantido como histórico.* |
+| Repositório | Conteúdo | Pipeline |
+|---|---|---|
+| [`fcg-platform`](https://github.com/VHMoschini/fcg-platform) | **Este.** Bicep da Azure, manifestos da infra, Kong, Prometheus/Grafana, scripts de segredos | `platform-deploy.yml` |
+| [`fcg-users-api`](https://github.com/VHMoschini/fcg-users-api) | Cadastro, autenticação e emissão de JWT | `ci-cd.yml` |
+| [`fcg-catalog-api`](https://github.com/VHMoschini/fcg-catalog-api) | Catálogo, busca avançada, avaliações e biblioteca | `ci-cd.yml` |
+| [`fcg-payments-api`](https://github.com/VHMoschini/fcg-payments-api) | Simulação de pagamento | `ci-cd.yml` |
+| [`fcg-notifications-function`](https://github.com/VHMoschini/fcg-notifications-function) | Notificações como Azure Function | `ci-cd.yml` |
 
-Os repositórios precisam estar clonados **lado a lado**, porque o compose constrói a partir do contexto de cada um:
+Cada serviço é dono do próprio código, dos próprios manifestos (`k8s/` com `kustomization.yaml`) e da própria pipeline. Este repositório cuida do que é compartilhado.
 
 ```
-D:\TechChallenge2\
-├─ fcg-platform\
-├─ fcg-users-api\
-├─ fcg-catalog-api\
-├─ fcg-payments-api\
-└─ fcg-notifications-function\
+fcg-platform/
+├─ infra/azure/            Bicep (ACR + AKS + Container Insights) e setup-azure.ps1
+├─ k8s/                    PostgreSQL, MongoDB, Redis, Elasticsearch, RabbitMQ, Mailpit, Azurite
+│  ├─ gateway/             Kong
+│  ├─ observability/       Prometheus e Grafana
+│  ├─ scaling/             HPAs da Payments e da função
+│  └─ secrets/             create-secrets.sh (pipeline) e create-secrets.ps1 (local)
+├─ gateway/kong.yml        Configuração declarativa do Kong (compose e Kubernetes)
+├─ observability/          prometheus.yml e dashboard do Grafana
+├─ fase4/                  Relatório de entrega e roteiro do vídeo
+└─ .github/workflows/      platform-deploy.yml
 ```
 
 ---
 
-## Decisões da Fase 3
+## Decisões da Fase 4
 
 | Requisito | Escolha | Por quê |
 |---|---|---|
-| **API Gateway** | **Kong** em modo DB-less | Configuração declarativa em um único `kong.yml` versionado, idêntico no compose e no Kubernetes. Sem dependência de nuvem nem de banco do gateway. |
-| **Serverless** | **Azure Functions** .NET 8 isolated com `RabbitMQTrigger` | Aciona direto na fila que já existe — nenhuma mudança no broker nem nos publicadores. O mesmo artefato roda em container no cluster e como Function App na Azure. |
-| **Observabilidade** | **Opção A — Prometheus + Grafana** | Stack aberta, sem conta nem chave de terceiros, implantada por manifestos Kubernetes como o desafio exige. Dashboard versionado em JSON e provisionado automaticamente. |
-| **NoSQL** | **MongoDB** com `MongoDB.Driver` | O catálogo expandido tem esquema que muda a cada jogo (mídias, requisitos por plataforma, atributos livres) e as avaliações têm alta volumetria — os dois casos que o modelo relacional atende mal. |
-| **Cache** | **Redis** via `IDistributedCache` | Tira do caminho as consultas mais caras e mais repetidas: listagem do catálogo, documento expandido, páginas de avaliações e a agregação de notas. |
+| **Nuvem** | **Azure** | Mesma nuvem da função serverless da Fase 3 (Bicep, Function App). Um provedor só, uma identidade só |
+| **Kubernetes gerenciado** | **AKS**, plano Free, 2 nós `Standard_B2ms`, Azure CNI overlay | Control plane gerenciado sem custo; 8 GB por nó comportam Elasticsearch, bancos e APIs |
+| **Registry** | **ACR** Basic, `adminUserEnabled: false` | O AKS puxa as imagens pela identidade gerenciada (role `AcrPull`); a pipeline publica por OIDC (role `AcrPush`). Nenhuma senha de registry existe |
+| **Exposição** | **Service `type: LoadBalancer` no Kong** | O Kong já é o gateway (roteamento, JWT, rate limit); colocar um Ingress Controller na frente dele seria um segundo proxy fazendo o mesmo papel. O AKS provisiona o Azure Load Balancer e o IP público |
+| **IaC** | **Bicep** + manifestos K8s com **Kustomize** | Bicep é a linguagem nativa da Azure. Kustomize troca a imagem por commit sem template nem `sed` |
+| **CI/CD** | **GitHub Actions** | Os repositórios já estão no GitHub; OIDC com a Azure é nativo |
+| **Autenticação da pipeline** | **OIDC (federated credentials)** | Cada execução recebe um token de curta duração; não há client secret para vazar ou expirar |
+| **Versionamento de imagem** | `<run>-<sha7>` (ex.: `42-a1b2c3d`) + `latest` | Tag imutável por commit: dá para saber exatamente o que está em produção e voltar para uma versão identificável |
+| **Security scan** | **Trivy** (imagem oficial, versão fixa) | Lista CVEs HIGH/CRITICAL com correção disponível. Por padrão só relata; `TRIVY_EXIT_CODE=1` faz bloquear |
+| **Deploy** | **Rolling Update** `maxSurge: 1`, `maxUnavailable: 0` + `preStop` + rollback automático | Pod novo só substitui o antigo depois de passar no readiness; se não ficar saudável em 5 min, a pipeline faz `rollout undo` |
+| **Busca** | **Elasticsearch 8** no cluster, via API REST | Fuzzy e relevância nativos; a mesma chamada REST funciona em Elastic Cloud e Amazon OpenSearch |
+| **NoSQL** | **MongoDB** (`MongoDB.Driver`) — mantido da Fase 3 | Catálogo expandido de esquema livre e avaliações de alta volumetria |
+| **Cache** | **Redis** (`IDistributedCache`) — mantido e estendido | Agora também guarda resultados da busca no Elasticsearch |
+| **Relacional** | **PostgreSQL** no cluster (antes: SQLite por pod) | O SQLite em `emptyDir` dava um banco diferente para cada réplica e era apagado a cada rolling update. O SQLite continua no desenvolvimento local e nos testes |
+| **Segredos** | **Secrets do Kubernetes** criados pela pipeline a partir dos **GitHub Secrets** | Nada em código ou YAML; os valores existem só nos GitHub Secrets e no cluster |
 
 ---
 
-## Pré-requisitos
+## Subindo na Azure (AKS)
 
-| Ferramenta | Versão | Para quê |
-|---|---|---|
-| Docker Desktop | Compose v2 | Subir a stack completa |
-| .NET SDK | 8.0 | Compilar e depurar fora do container |
-| kubectl | 1.28+ | Deploy no Kubernetes |
-| Kubernetes local | Docker Desktop, Kind ou Minikube | Etapa de Kubernetes |
+### Pré-requisitos
 
-```powershell
-docker --version
-dotnet --list-sdks
-kubectl version --client
-```
-
----
-
-## Subindo com Docker Compose
-
-```powershell
-cd fcg-platform
-Copy-Item .env.example .env      # ajuste JWT_KEY se quiser
-docker compose up -d --build
-docker compose ps
-```
-
-A primeira execução compila cinco imagens .NET e pode levar alguns minutos.
-
-### Endereços
-
-| O quê | URL | Credenciais |
-|---|---|---|
-| **API Gateway (única porta de entrada)** | <http://localhost:8000> | — |
-| Kong Admin API | <http://localhost:8001> | — |
-| **Grafana** (dashboard já provisionado) | <http://localhost:3000> | `admin` / `admin` |
-| **Prometheus** | <http://localhost:9090> | — |
-| **Mailpit** (caixa de e-mails) | <http://localhost:8025> | — |
-| RabbitMQ Management | <http://localhost:15672> | `guest` / `guest` |
-| MongoDB | `mongodb://localhost:27017` | — |
-| Redis | `localhost:6379` | — |
-
-Os microsserviços **não publicam porta no host** — é justamente o ponto do gateway. Para abrir o Swagger de um deles durante a depuração:
-
-```powershell
-docker compose -f docker-compose.yml -f docker-compose.debug.yml up -d
-```
-
-| Serviço | Swagger | Métricas |
-|---|---|---|
-| Users API | <http://localhost:5101/swagger> | <http://localhost:5101/metrics> |
-| Catalog API | <http://localhost:5102/swagger> | <http://localhost:5102/metrics> |
-| Payments API | <http://localhost:5103/swagger> | <http://localhost:5103/metrics> |
-
-### Parando
-
-```powershell
-docker compose down            # mantém os volumes
-docker compose down -v         # apaga também os dados
-```
-
----
-
-## Roteiro de demonstração
-
-Tudo passa pelo gateway, na porta **8000**.
-
-### 1. Login do administrador
-
-O ambiente de desenvolvimento cria um admin no start da Users API.
-
-```powershell
-$login = Invoke-RestMethod -Uri http://localhost:8000/api/auth/login -Method Post `
-  -ContentType 'application/json' `
-  -Body '{"email":"admin@fcg.local","password":"Admin@123"}'
-$admin = @{ Authorization = "Bearer $($login.token)" }
-```
-
-### 2. O gateway barra requisição sem token
-
-```powershell
-# 401 vindo do Kong, sem sequer encostar na Catalog API
-Invoke-WebRequest -Uri http://localhost:8000/api/games -Method Post `
-  -ContentType 'application/json' -Body '{"titulo":"X","genero":"Y","preco":1}'
-```
-
-### 3. Cadastrar um jogo e enriquecer no MongoDB
-
-```powershell
-$jogo = Invoke-RestMethod -Uri http://localhost:8000/api/games -Method Post -Headers $admin `
-  -ContentType 'application/json' `
-  -Body '{"titulo":"Elden Ring","genero":"RPG de acao","preco":249.90}'
-
-Invoke-RestMethod -Uri "http://localhost:8000/api/games/$($jogo.id)/details" -Method Put -Headers $admin `
-  -ContentType 'application/json' -Body (@{
-    descricao     = "RPG de acao em mundo aberto ambientado nas Terras Intermedias."
-    desenvolvedora = "FromSoftware"
-    publicadora    = "Bandai Namco"
-    dataLancamento = "2022-02-25T00:00:00Z"
-    tags           = @("souls-like","mundo-aberto","dificil","rpg")
-    plataformas    = @("PC","PS5","Xbox Series X")
-    idiomas        = @("Portugues do Brasil","Ingles","Japones")
-    midias         = @{ capaUrl = "https://cdn.fcg.local/elden/capa.jpg"; trailerUrl = "https://cdn.fcg.local/elden/trailer.mp4"; screenshots = @("https://cdn.fcg.local/elden/1.jpg") }
-    requisitos     = @{
-      minimo      = @{ so = "Windows 10"; processador = "Intel Core i5-8400"; memoria = "12 GB"; video = "GTX 1060 3 GB" }
-      recomendado = @{ so = "Windows 11"; processador = "Intel Core i7-8700K"; memoria = "16 GB"; video = "GTX 1070 8 GB" }
-    }
-  } | ConvertTo-Json -Depth 6)
-```
-
-### 4. Cache em ação
-
-```powershell
-# 1ª chamada: miss, busca no MongoDB.  2ª: hit, responde do Redis.
-1..2 | ForEach-Object {
-  Measure-Command { Invoke-RestMethod -Uri "http://localhost:8000/api/games/$($jogo.id)/details" } |
-    Select-Object -ExpandProperty TotalMilliseconds
-}
-```
-
-No Grafana, o painel **Acerto do cache (Redis)** reage na hora.
-
-### 5. Busca no catálogo expandido
-
-```powershell
-Invoke-RestMethod -Uri "http://localhost:8000/api/games/search?q=mundo%20aberto&tag=rpg"
-```
-
-### 6. Cadastro de usuário e a função serverless
-
-```powershell
-$novo = Invoke-RestMethod -Uri http://localhost:8000/api/auth/register -Method Post `
-  -ContentType 'application/json' `
-  -Body '{"name":"Ana Souza","email":"ana@fcg.local","password":"Senha@123"}'
-$ana = @{ Authorization = "Bearer $($novo.token)" }
-```
-
-O e-mail de boas-vindas aparece no **Mailpit** (<http://localhost:8025>). Os logs da invocação:
-
-```powershell
-docker compose logs -f notifications-function
-```
-
-### 7. Fluxo de compra completo
-
-```powershell
-Invoke-RestMethod -Uri "http://localhost:8000/api/users/me/library/games/$($jogo.id)" -Method Post -Headers $ana
-Start-Sleep -Seconds 3
-Invoke-RestMethod -Uri http://localhost:8000/api/users/me/library -Headers $ana
-```
-
-Pagamento aprovado → jogo na biblioteca **e** e-mail de confirmação no Mailpit. Para forçar uma recusa, crie um jogo com preço `99.99` (ver `Payments__RejectPrices__0` no compose).
-
-### 8. Avaliar o jogo
-
-```powershell
-Invoke-RestMethod -Uri "http://localhost:8000/api/games/$($jogo.id)/reviews" -Method Post -Headers $ana `
-  -ContentType 'application/json' `
-  -Body '{"nota":5,"titulo":"Obra-prima","comentario":"Melhor jogo que ja joguei."}'
-
-Invoke-RestMethod -Uri "http://localhost:8000/api/games/$($jogo.id)/reviews/summary"
-```
-
-Como Ana comprou o jogo, a avaliação sai com `compraVerificada: true`.
-
-### 9. Gerar carga para o dashboard
-
-```powershell
-1..300 | ForEach-Object {
-  Invoke-RestMethod -Uri http://localhost:8000/api/games | Out-Null
-  Invoke-RestMethod -Uri "http://localhost:8000/api/games/$($jogo.id)/details" | Out-Null
-}
-```
-
-Abra <http://localhost:3000> e acompanhe throughput, latência p95, status codes e taxa de acerto do cache.
-
----
-
-## Deploy no Kubernetes
-
-> **Atalho.** Os dois scripts deste repositório fazem os passos 1 a 3 de uma vez, encontrando sozinhos a pasta onde os repos estão clonados lado a lado:
->
-> ```powershell
-> .\build-images.ps1        # passo 1
-> .\deploy-k8s.ps1          # passos 2 e 3
-> .\deploy-k8s.ps1 -Delete  # desfaz
-> ```
->
-> Os passos abaixo são o que eles executam, para quem preferir aplicar à mão.
-
-### 1. Construir as imagens
-
-```powershell
-docker build -t fcg/users-api:latest              ..\fcg-users-api            -f ..\fcg-users-api\Users.Api\Dockerfile
-docker build -t fcg/catalog-api:latest            ..\fcg-catalog-api          -f ..\fcg-catalog-api\Catalog.Api\Dockerfile
-docker build -t fcg/payments-api:latest           ..\fcg-payments-api         -f ..\fcg-payments-api\Payments.Api\Dockerfile
-docker build -t fcg/notifications-function:latest ..\fcg-notifications-function
-```
-
-Em Kind, carregue cada imagem no cluster: `kind load docker-image fcg/users-api:latest` (repita para as demais).
-
-### 2. Gerar os ConfigMaps a partir dos arquivos versionados
-
-O `kong.yml` e o dashboard do Grafana são os mesmos arquivos usados pelo compose — nada é duplicado à mão:
-
-```powershell
-kubectl create configmap kong-declarative `
-  --from-file=kong.yml=gateway/kong.yml `
-  --dry-run=client -o yaml | kubectl apply -f -
-
-kubectl create configmap grafana-dashboards `
-  --from-file=fcg-overview.json=observability/grafana/dashboards/fcg-overview.json `
-  --dry-run=client -o yaml | kubectl apply -f -
-```
-
-### 3. Aplicar os manifestos
-
-```powershell
-# Infraestrutura
-kubectl apply -f k8s/rabbitmq.yaml
-kubectl apply -f k8s/mongo.yaml
-kubectl apply -f k8s/redis.yaml
-kubectl apply -f k8s/mailpit.yaml
-kubectl apply -f k8s/azurite.yaml
-
-# Microsserviços
-kubectl apply -f ..\fcg-users-api\k8s\
-kubectl apply -f ..\fcg-catalog-api\k8s\
-kubectl apply -f ..\fcg-payments-api\k8s\
-
-# Função serverless
-kubectl apply -f k8s/notifications-function.yaml
-
-# Gateway e observabilidade
-kubectl apply -f k8s/gateway/
-kubectl apply -f k8s/observability/
-
-# Escala automática (requer metrics-server)
-kubectl apply -f k8s/scaling/
-
-kubectl get pods
-```
-
-> **Atenção:** a `jwt-key` precisa ser idêntica nos três Secrets — `users-api-secret`, `catalog-api-secret` e `kong-secret`. Se divergirem, o gateway rejeita todo token válido.
-
-### 4. Acessos (NodePort)
-
-| O quê | URL |
+| Ferramenta | Para quê |
 |---|---|
-| API Gateway | <http://localhost:30080> |
-| Prometheus | <http://localhost:30090> |
-| Grafana | <http://localhost:30300> |
+| Azure CLI (`az login`) | Criar a infra e a identidade da pipeline |
+| GitHub CLI (`gh auth login`) com admin nos repositórios | Gravar Secrets e Variables |
+| kubectl | Acompanhar o cluster |
+| PowerShell 7+ | Rodar o `setup-azure.ps1` |
+
+### 1. Infra e GitHub em um comando
 
 ```powershell
-# Mailpit e RabbitMQ, sob demanda
-kubectl port-forward svc/mailpit 8025:8025
-kubectl port-forward svc/rabbitmq 15672:15672
+cd fcg-platform\infra\azure
+.\setup-azure.ps1                       # padrão: rg-fcg em eastus
+.\setup-azure.ps1 -Location brazilsouth # outra região
 ```
 
-### Recursos usados
+O script:
+
+1. cria o resource group e aplica o [`main.bicep`](infra/azure/main.bicep) — ACR, AKS e Container Insights, mais a permissão `AcrPull` dos nós do AKS sobre o ACR;
+2. configura o `kubectl` local para o cluster;
+3. cria a identidade `fcg-github-actions` com **federated credentials** para cada repositório (`repo:VHMoschini/<repo>:ref:refs/heads/main`) e as roles mínimas: `AcrPush` no ACR, `Azure Kubernetes Service Cluster User Role` no AKS e `Reader` no resource group;
+4. gera senhas aleatórias e grava os **GitHub Secrets e Variables** de todos os repositórios. As senhas ficam também em `infra/azure/.secrets.local.json` (no `.gitignore`) para consulta durante a demonstração.
+
+### 2. Plataforma
+
+No GitHub: **fcg-platform → Actions → Platform deploy → Run workflow**. A pipeline cria os Secrets do Kubernetes, sobe PostgreSQL, MongoDB, Redis, Elasticsearch, RabbitMQ, Kong e a observabilidade.
+
+### 3. Serviços
+
+Em cada repositório de serviço: **Actions → CI/CD → Run workflow** (ou qualquer push na branch principal). Cada pipeline publica a imagem no ACR e faz o rolling update no AKS.
+
+### 4. Acesso
+
+```powershell
+kubectl get svc kong-proxy        # EXTERNAL-IP = IP público do gateway
+$GW = "http://<EXTERNAL-IP>"
+
+kubectl get pods -o wide          # pods distribuídos pelos 2 nós
+kubectl port-forward svc/grafana 3000:3000
+kubectl port-forward svc/mailpit 8025:8025
+```
+
+No portal da Azure: **resource group `rg-fcg` → `fcg-aks` → Workloads / Insights** mostra pods, nós, CPU e memória; **`fcgacr...` → Repositories** mostra as imagens com as tags de cada commit.
+
+### Recursos Kubernetes usados
 
 | Recurso | Onde | Papel |
 |---|---|---|
-| `Deployment` | todos os serviços | Nenhum Pod é criado solto |
-| `Service` | todos | Comunicação interna por nome DNS (`rabbitmq`, `mongo`, `redis`, `users-api`, …) |
-| `ConfigMap` | configuração não sensível | Filas, hosts, TTLs de cache, `kong.yml`, `prometheus.yml`, dashboard |
-| `Secret` | dados sensíveis | `jwt-key`, connection strings, credenciais do RabbitMQ e do Grafana |
-| `PersistentVolumeClaim` | MongoDB | Dados do catálogo expandido sobrevivem ao restart do pod |
-| `HorizontalPodAutoscaler` | Payments API, função | Escala por CPU |
-| `readiness` / `liveness` | todos | Pod só entra no balanceamento quando as dependências respondem |
+| `Deployment` | APIs, função, Kong, Redis, RabbitMQ, MongoDB, observabilidade | Nenhum pod é criado solto |
+| `StatefulSet` + `volumeClaimTemplates` | PostgreSQL, Elasticsearch | Identidade estável e Azure Disk por réplica |
+| `Service` `ClusterIP` | todos | Comunicação interna por nome DNS |
+| `Service` `LoadBalancer` | `kong-proxy` | Único ponto exposto à internet |
+| `ConfigMap` | configuração não sensível | Hosts, TTLs de cache, provider do banco, `kong.yml`, dashboard |
+| `Secret` | credenciais | Criados pela pipeline, nunca versionados |
+| `HorizontalPodAutoscaler` | Users, Catalog, Payments, função | Escala por CPU (o AKS já traz o metrics-server) |
+| `readiness` / `liveness` / `preStop` | todos | Rolling update sem requisição perdida |
 
 ---
 
-## API Gateway (Kong)
+## CI/CD com GitHub Actions
 
-Configuração declarativa em [`gateway/kong.yml`](gateway/kong.yml) — versionada, revisada como código.
+### Pipeline de cada serviço — `.github/workflows/ci-cd.yml`
 
-### Rotas
-
-| Rota | Caminho | Métodos | Destino | JWT |
-|---|---|---|---|---|
-| `users-auth` | `/api/auth` | todos | Users API | ❌ público (rate limit 30/min por IP) |
-| `catalog-public-read` | `/api/games` | `GET`, `HEAD`, `OPTIONS` | Catalog API | ❌ público (rate limit 300/min) |
-| `catalog-write` | `/api/games` | `POST`, `PUT`, `PATCH`, `DELETE` | Catalog API | ✅ obrigatório |
-| `catalog-library` | `/api/users/me` | todos | Catalog API | ✅ obrigatório |
-
-A separação por método é o que permite deixar a leitura do catálogo aberta e ainda assim exigir token em toda escrita — inclusive ao publicar uma avaliação, que fica sob `/api/games/{id}/reviews`.
-
-### Validação do JWT
-
-O plugin `jwt` confere assinatura **HS256** e expiração antes de encaminhar. A ligação é feita pelo claim `iss`:
-
-* a Users API assina com `Jwt:Issuer = "FCG"` e `Jwt:Key`;
-* o Kong tem um consumer com `key: FCG` e o mesmo segredo.
-
-O segredo **não fica no repositório**: `kong.yml` referencia `{vault://env/fcg-jwt-key}`, que o Kong resolve a partir da variável de ambiente `FCG_JWT_KEY` — vinda do `.env` no compose e de um `Secret` no Kubernetes.
-
-Os microsserviços continuam validando o token por conta própria. O gateway corta o tráfego inválido na borda; o serviço não confia cegamente em quem chama.
-
-### Outros plugins
-
-| Plugin | Escopo | Papel |
-|---|---|---|
-| `rate-limiting` | rotas de auth e de leitura | Contém força bruta no login e abuso de leitura |
-| `prometheus` | global | Publica métricas do gateway em `:8100/metrics` |
-| `correlation-id` | global | `X-Correlation-ID` para correlacionar gateway e serviços |
-
-### Conferindo a configuração carregada
-
-```powershell
-(Invoke-RestMethod http://localhost:8001/routes).data | Select-Object name, paths, methods
-(Invoke-RestMethod http://localhost:8001/consumers).data
+```
+push na main
+  │
+  ├─ Build & Test ── dotnet restore · build (Release) · dotnet test (xUnit, cobertura, resultados como artefato)
+  │
+  ├─ Imagem ──────── docker build · tag <run>-<sha7> + latest · Trivy (HIGH/CRITICAL) · az acr login (OIDC) · docker push
+  │
+  └─ Deploy no AKS ─ azure/login (OIDC) · aks-set-context
+                     kustomize edit set image <svc>=<acr>.azurecr.io/<svc>:<tag>
+                     kubectl apply -k k8s/
+                     kubectl rollout status (5 min) ── falhou? ──▶ kubectl rollout undo
 ```
 
+Em **pull request** roda Build & Test e o build/scan da imagem, sem push e sem deploy. O resumo de cada execução mostra a imagem publicada, os pods e o histórico de revisões.
+
+| Serviço | Testes unitários |
+|---|---|
+| Users API | Validação de credenciais, emissão e validação do JWT, cadastro e login (SQLite em memória, broker substituído por dublê), entidade `Usuario` |
+| Catalog API | Montagem da consulta do Elasticsearch (fuzzy, pesos, filtros, ordenação), cliente HTTP do Elasticsearch (handler falso), serviço de busca com cache e fallback, indexador, cache distribuído, entidade `Jogo` |
+| Payments API / Função | Build e imagem (sem testes nesta fase) |
+
+### Pipeline da plataforma — `.github/workflows/platform-deploy.yml`
+
+Valida a sintaxe dos manifestos e **reprova se algum manifesto voltar a ter `kind: Secret`**. Depois cria os Secrets, os ConfigMaps gerados (`kong.yml`, dashboard) e aplica bancos, busca, mensageria, gateway, observabilidade e HPAs, aguardando cada rollout.
+
+### Por que o deploy não derruba nada
+
+* `maxUnavailable: 0` — nenhum pod antigo sai antes de um novo estar pronto;
+* `readinessProbe` em `/health/ready` — o pod novo só entra no balanceamento quando o banco (e, no Catalog, o MongoDB) responde;
+* `preStop: sleep 5` — o pod antigo sai do Service antes de receber o SIGTERM, sem cortar requisição em andamento;
+* `rollout undo` automático se o rollout não terminar.
+
 ---
 
-## Observabilidade (Prometheus + Grafana)
+## Segurança e gestão de segredos
 
-**Opção A do desafio.** Escolhida por ser inteiramente aberta, sem conta nem chave de terceiros, e por permitir a implantação via manifestos Kubernetes que o enunciado pede.
+**Nenhuma string de conexão, chave ou senha está no código-fonte ou nos YAML.**
 
-### Instrumentação
+```
+GitHub Secrets (fcg-platform)
+        │  injetados como variáveis de ambiente no runner (mascarados no log)
+        ▼
+k8s/secrets/create-secrets.sh ── kubectl create secret ... --dry-run=client | kubectl apply
+        │
+        ▼
+Secrets do Kubernetes ── secretKeyRef nos Deployments ──▶ variáveis de ambiente do pod em runtime
+```
 
-Users, Catalog e Payments usam **OpenTelemetry** e expõem `/metrics` no formato Prometheus:
-
-| Origem | Métricas |
-|---|---|
-| `AddAspNetCoreInstrumentation` | `http_server_request_duration_seconds` — latência, contagem e status code |
-| `AddHttpClientInstrumentation` | Chamadas HTTP de saída |
-| `AddRuntimeInstrumentation` | GC, heap, thread pool, CPU |
-| `AddMeter("MassTransit")` | Publicação e consumo de mensagens |
-| Medidores próprios | Métricas de negócio e de cache |
-
-Métricas de negócio:
-
-| Métrica | Serviço | Labels |
+| Secret | Usado por | Conteúdo |
 |---|---|---|
-| `fcg_users_registered_total` | Users | — |
-| `fcg_users_logins_total` | Users | `result` |
-| `fcg_catalog_cache_requests_total` | Catalog | `result` (hit/miss), `cache` |
-| `fcg_catalog_purchases_started_total` | Catalog | — |
-| `fcg_catalog_purchases_confirmed_total` | Catalog | — |
-| `fcg_catalog_reviews_total` | Catalog | — |
-| `fcg_catalog_mongo_operation_duration_seconds` | Catalog | `operation` |
-| `fcg_payments_processed_total` | Payments | `status` |
-| `fcg_payments_amount` | Payments | `status` |
+| `postgres-secret` | PostgreSQL | usuário e senha |
+| `mongo-secret` | MongoDB | usuário root e senha |
+| `redis-secret` | Redis | `requirepass` |
+| `rabbitmq-secret` | RabbitMQ | usuário padrão e senha |
+| `elasticsearch-secret` | Elasticsearch | senha do usuário `elastic` |
+| `azurite-secret` | Azurite | conta e chave próprias (não a chave pública do emulador) |
+| `grafana-secret` | Grafana | admin |
+| `kong-secret` | Kong | chave do JWT |
+| `users-api-secret` | Users API | JWT, connection string, RabbitMQ, senha do admin inicial |
+| `catalog-api-secret` | Catalog API | JWT, connection strings (PostgreSQL, MongoDB, Redis), RabbitMQ, Elasticsearch |
+| `payments-api-secret` | Payments API | connection string, RabbitMQ |
+| `notifications-function-secret` | Função | AMQP, storage do host |
 
-### Coleta
+O que mudou no código para isso:
 
-* **Compose:** lista estática em [`observability/prometheus/prometheus.yml`](observability/prometheus/prometheus.yml).
-* **Kubernetes:** descoberta dinâmica por `kubernetes_sd_configs`. Todo pod anotado com `prometheus.io/scrape: "true"` entra na coleta automaticamente — réplica nova é coletada sem tocar em configuração.
+* `appsettings.json` sem `Jwt:Key`, sem usuário/senha do RabbitMQ e sem senha de seed;
+* `Program.cs` sem fallback `"guest"` — sem credencial configurada, o MassTransit usa o padrão do broker local;
+* `<UserSecretsId>` nos projetos, para desenvolvimento local com `dotnet user-secrets`;
+* o `docker-compose.yml` exige `JWT_KEY`, `SEED_ADMIN_PASSWORD`, `ELASTIC_PASSWORD` e `GRAFANA_PASSWORD` no `.env` e recusa subir sem eles.
 
-### Dashboard
-
-[`observability/grafana/dashboards/fcg-overview.json`](observability/grafana/dashboards/fcg-overview.json) — 21 painéis provisionados no start, em cinco blocos:
-
-| Bloco | Painéis |
-|---|---|
-| **Visão geral** | Throughput, taxa de erros, latência p95, acerto do cache · requisições por serviço e por status code · latência p50/p95/p99 · erros 4xx/5xx · rotas mais lentas |
-| **API Gateway** | Requisições por status no Kong · latência do gateway x do upstream |
-| **Persistência poliglota** | Cache hits x misses · acerto por tipo de consulta · duração das operações no MongoDB |
-| **Fluxos de negócio** | Pagamentos por status · compras iniciadas x confirmadas · cadastros, logins e avaliações |
-| **Runtime .NET** | Heap gerenciado · tempo de CPU · coletas de lixo por geração |
-
-Os três itens exigidos pelo enunciado — **latência**, **contagem de requisições (total e por status code)** e **taxa de erros** — estão no primeiro bloco.
+Na pipeline, a autenticação na Azure é por **OIDC**: não há client secret em lugar nenhum.
 
 ---
 
 ## Persistência poliglota e cache
 
-### MongoDB — catálogo expandido e avaliações
-
-O SQLite continua sendo a fonte da verdade transacional do jogo (título, gênero, preço, biblioteca do usuário). O MongoDB guarda o que o modelo relacional atende mal:
-
-| Coleção | Conteúdo | Índices |
+| Banco | Papel | Por quê |
 |---|---|---|
-| `game_details` | Descrição, mídias, tags, plataformas, idiomas e requisitos por perfil — esquema que muda de jogo para jogo | Texto (título, descrição, tags) · tags · (ativo, gênero) |
-| `game_reviews` | Avaliações dos usuários: nota, título, comentário e selo de compra verificada | Único (gameId, usuarioId) · (gameId, criadoEm desc) |
+| **PostgreSQL** | Fonte da verdade transacional: usuários, jogos, biblioteca, pagamentos | Compartilhado entre as réplicas e persistente; cada serviço tem o seu database |
+| **MongoDB** | Catálogo expandido (`game_details`) e avaliações (`game_reviews`) | Esquema que muda a cada jogo; avaliações com alto volume e agregação de notas |
+| **Elasticsearch** | Índice de busca `fcg-games` | Busca textual tolerante a erro e ordenada por relevância, fora do banco transacional |
+| **Redis** | Cache distribuído | Tira do caminho as consultas mais caras e repetidas |
 
-Título, gênero, preço e situação ficam **denormalizados** no documento, de modo que a busca acontece inteiramente no Mongo, sem join entre bancos. Toda escrita no catálogo relacional sincroniza esses campos.
+### Como o NoSQL entra na arquitetura
 
-O resumo das avaliações (total, nota média e distribuição) sai de um **pipeline de agregação** do MongoDB.
+O PostgreSQL guarda o jogo (título, gênero, preço, situação) e o vínculo com a biblioteca. O MongoDB guarda o que mudaria o schema relacional a cada jogo novo — descrição, mídias, tags, plataformas, requisitos por perfil — e as avaliações dos usuários, com o resumo de notas calculado por pipeline de agregação. Título, gênero, preço e situação ficam denormalizados no documento, e toda escrita no relacional os sincroniza (`GameDetailsService.SyncFromRelationalAsync`).
 
-### Redis — cache distribuído
+O índice do Elasticsearch junta os dois: dados do PostgreSQL + texto rico do MongoDB.
 
-Acesso via `IDistributedCache` (`Microsoft.Extensions.Caching.StackExchangeRedis`), encapsulado em `CatalogCache`.
+### Redis — o que fica em cache
 
 | Chave | TTL | Origem evitada |
 |---|---|---|
-| `games:list` | 60 s | Listagem do catálogo no SQLite |
+| `games:list` | 60 s | Listagem do catálogo no PostgreSQL |
 | `game:{id}:details` | 300 s | Documento do MongoDB + agregação de notas |
 | `game:{id}:reviews:{versão}:p{n}:s{n}` | 120 s | Página de avaliações |
 | `game:{id}:reviews:{versão}:summary` | 120 s | Pipeline de agregação |
-| `search:{versão}:{hash}` | 90 s | Busca no MongoDB |
+| `search:{versão}:{hash}` | 90 s | **Busca no Elasticsearch** (e a busca simples no MongoDB) |
 
-**Invalidação por token de versão.** `IDistributedCache` não remove por prefixo, então cada escopo (as avaliações de um jogo, os resultados de busca) tem um token que entra na composição da chave. Gravar uma avaliação troca o token e derruba de uma vez todas as páginas em cache daquele jogo, sem varrer o Redis.
+**Invalidação por token de versão:** cada escopo tem um token que entra na chave; gravar troca o token e derruba todas as entradas daquele escopo de uma vez.
 
-**Degradação controlada.** Falha do Redis é tratada como *miss* e registrada em log: a requisição segue para a origem e responde normalmente. `Cache__RedisEnabled=false` troca o Redis por cache em memória, útil em CI.
+**Degradação controlada:** falha do Redis vira *miss* e a origem responde; a métrica `fcg_catalog_cache_requests_total` alimenta o painel de acerto no Grafana.
 
-Cada consulta ao cache é contabilizada como *hit* ou *miss* na métrica `fcg_catalog_cache_requests_total`, o que alimenta o painel de taxa de acerto no Grafana.
+---
+
+## Busca avançada com Elasticsearch
+
+Detalhes no [README da Catalog API](https://github.com/VHMoschini/fcg-catalog-api#busca-avançada-elasticsearch). Resumo:
+
+| Item | Como |
+|---|---|
+| Endpoint | `GET /api/games/search?q=&genero=&tag=&precoMaximo=&pagina=&tamanho=` |
+| Fuzzy | `multi_match` com `fuzziness: AUTO` — "eldn rign" encontra *Elden Ring* |
+| Relevância | Ordena por `_score`; o título pesa 4×, tags 2×; frase exata e prefixo no título somam pontos |
+| Acentos | Analisador com `asciifolding`: "acao" encontra "ação" |
+| Sincronização | Todo insert/edit/inativação de jogo e todo `PUT /details` reindexa o jogo na hora (`refresh=wait_for`) |
+| Recuperação | No start, se o índice estiver vazio, reindexa tudo; `POST /api/games/search/reindex` (admin) refaz sob demanda |
+| Degradação | Elasticsearch fora do ar → a busca responde pelo MongoDB e o campo `motor` mostra `"mongodb"` |
+| Cache | Resultado vai para o Redis; a segunda busca igual volta com `doCache: true` |
+| Comparação | `GET /api/games/search/basic` é a busca da Fase 3 (MongoDB, sem fuzzy) |
+
+---
+
+## Roteiro de demonstração em produção
+
+O roteiro completo do vídeo, com tempos e falas, está em [`fase4/ROTEIRO_VIDEO_FASE4.md`](fase4/ROTEIRO_VIDEO_FASE4.md). Os comandos essenciais:
+
+```powershell
+$GW = "http://$(kubectl get svc kong-proxy -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+$senhas = Get-Content .\infra\azure\.secrets.local.json | ConvertFrom-Json
+
+# Login do admin
+$login = Invoke-RestMethod "$GW/api/auth/login" -Method Post -ContentType 'application/json' `
+  -Body (@{ email = "admin@fcg.local"; password = $senhas.SEED_ADMIN_PASSWORD } | ConvertTo-Json)
+$admin = @{ Authorization = "Bearer $($login.token)" }
+
+# Cadastra um jogo: grava no PostgreSQL, sincroniza o MongoDB e indexa no Elasticsearch
+$jogo = Invoke-RestMethod "$GW/api/games" -Method Post -Headers $admin -ContentType 'application/json' `
+  -Body '{"titulo":"Elden Ring","genero":"RPG de acao","preco":249.90}'
+
+# Busca com erro de digitação
+Invoke-RestMethod "$GW/api/games/search?q=eldn%20rign" | Select-Object motor, total, doCache, tempoMs
+(Invoke-RestMethod "$GW/api/games/search?q=eldn%20rign").itens | Select-Object titulo, relevancia
+
+# Busca simples (Fase 3) não encontra nada com o mesmo erro
+(Invoke-RestMethod "$GW/api/games/search/basic?q=eldn%20rign").total
+
+# Impacto do cache: 1ª chamada vai ao MongoDB, a 2ª sai do Redis
+1..3 | ForEach-Object { (Measure-Command { Invoke-RestMethod "$GW/api/games/$($jogo.id)/details" }).TotalMilliseconds }
+```
+
+---
+
+## Ambiente local
+
+### Docker Compose
+
+```powershell
+cd fcg-platform
+Copy-Item .env.example .env      # preencha JWT_KEY, SEED_ADMIN_PASSWORD, ELASTIC_PASSWORD, GRAFANA_PASSWORD
+docker compose up -d --build
+```
+
+Localmente as APIs usam **SQLite** (provider padrão) e o compose sobe também o Elasticsearch.
+
+| O quê | URL |
+|---|---|
+| **API Gateway** | <http://localhost:8000> |
+| Grafana | <http://localhost:3000> |
+| Prometheus | <http://localhost:9090> |
+| Mailpit | <http://localhost:8025> |
+| RabbitMQ Management | <http://localhost:15672> |
+| Elasticsearch | <http://localhost:9200> (usuário `elastic`) |
+
+> O RabbitMQ do compose usa a credencial padrão de desenvolvimento do broker (`guest`), que só existe no ambiente local. No cluster o usuário e a senha vêm do Secret `rabbitmq-secret`.
+
+### Kubernetes local (Docker Desktop)
+
+```powershell
+.\build-images.ps1        # imagens fcg/*:latest
+.\deploy-k8s.ps1          # cria os Secrets (senhas aleatórias), aplica infra, serviços (-k), gateway e observabilidade
+.\deploy-k8s.ps1 -Delete  # desfaz
+```
+
+O gateway responde em <http://localhost> (o Docker Desktop atende `type: LoadBalancer` no localhost).
+
+---
+
+## API Gateway (Kong)
+
+Configuração declarativa em [`gateway/kong.yml`](gateway/kong.yml), igual no compose e no Kubernetes.
+
+| Rota | Caminho | Métodos | Destino | JWT |
+|---|---|---|---|---|
+| `users-auth` | `/api/auth` | todos | Users API | ❌ público (rate limit 30/min por IP) |
+| `catalog-public-read` | `/api/games` | `GET`, `HEAD`, `OPTIONS` | Catalog API | ❌ público (rate limit 300/min) — inclui a busca |
+| `catalog-write` | `/api/games` | `POST`, `PUT`, `PATCH`, `DELETE` | Catalog API | ✅ obrigatório — inclui o reindex |
+| `catalog-library` | `/api/users/me` | todos | Catalog API | ✅ obrigatório |
+
+O plugin `jwt` confere assinatura HS256 e expiração antes de encaminhar; o segredo vem de `{vault://env/fcg-jwt-key}`, resolvido a partir do Secret `kong-secret`. Os microsserviços continuam validando o token por conta própria.
+
+---
+
+## Observabilidade (Prometheus + Grafana)
+
+Users, Catalog e Payments expõem `/metrics` (OpenTelemetry). No Kubernetes o Prometheus descobre os pods por anotação (`prometheus.io/scrape: "true"`), então réplica nova criada pelo HPA ou pelo rolling update entra na coleta sozinha.
+
+O dashboard [`fcg-overview.json`](observability/grafana/dashboards/fcg-overview.json) é provisionado no start e tem um bloco novo na Fase 4:
+
+| Bloco | Painéis |
+|---|---|
+| Visão geral | Throughput, taxa de erros, latência p95, acerto do cache, requisições por serviço e status |
+| API Gateway | Requisições por status no Kong, latência do gateway × upstream |
+| Persistência poliglota | Cache hits × misses, acerto por tipo de consulta, duração das operações no MongoDB |
+| **Busca avançada** | **Buscas por motor (Elasticsearch / MongoDB / Redis), duração p95 no motor, indexações por resultado** |
+| Fluxos de negócio | Pagamentos, compras, cadastros e logins |
+| Runtime .NET | Heap, alocação, coletas de lixo |
+
+Métricas novas da Catalog API: `fcg_catalog_search_requests_total{engine}`, `fcg_catalog_search_duration_seconds`, `fcg_catalog_search_index_operations_total{operation,result}`.
 
 ---
 
 ## Função serverless
 
-A `NotificationsAPI` da Fase 2 era um container ligado 24/7 apenas esperando mensagem. Na Fase 3 virou uma **Azure Function** .NET 8 isolated acionada pelo `RabbitMQTrigger`, no repositório `fcg-notifications-function`.
+A notificação por e-mail é uma **Azure Function** .NET 8 isolated acionada por `RabbitMQTrigger` (repositório `fcg-notifications-function`), rodando como pod no AKS ao lado do Azurite, que faz o papel da storage do host. Na Fase 4 o manifesto dela foi para o próprio repositório, junto da pipeline que gera a imagem.
 
 | Função | Fila | Ação |
 |---|---|---|
 | `UserCreatedFunction` | `notifications-user-created` | E-mail de boas-vindas |
 | `PaymentProcessedFunction` | `notifications-payment-processed` | Confirmação de compra ou aviso de recusa |
 
-### A ponte entre MassTransit e o trigger
-
-O MassTransit publica em **exchange fanout** com o nome do tipo do evento e envolve a mensagem em um envelope. O `RabbitMQTrigger` escuta uma **fila** e entrega o corpo bruto. A ligação é feita em dois pontos:
-
-1. [`rabbitmq/definitions.json`](rabbitmq/definitions.json) declara as filas `notifications-*` e os bindings com os exchanges do MassTransit — carregado pelo broker no start, via `load_definitions`.
-2. `MassTransitEnvelope.Unwrap<T>` extrai o payload do envelope dentro da função.
-
-Nenhum publicador precisou mudar: as APIs continuam publicando exatamente como na Fase 2.
-
-### Storage do host de Functions
-
-Triggers que não são HTTP exigem uma conta de storage (`AzureWebJobsStorage`) para leases e singletons. Localmente esse papel é do **Azurite**; na Azure, da Storage Account provisionada pelo Bicep.
+As filas e os bindings com os exchanges do MassTransit são importados no RabbitMQ pelo hook `postStart` do container (no compose, por `load_definitions`).
 
 ---
 
 ## Referência de endpoints
 
-Base: `http://localhost:8000` (compose) ou `http://localhost:30080` (Kubernetes).
+Base: `http://<IP do kong-proxy>` (AKS), `http://localhost:8000` (compose) ou `http://localhost` (Kubernetes local).
 
 ### Users API
 
@@ -545,39 +458,25 @@ Base: `http://localhost:8000` (compose) ou `http://localhost:30080` (Kubernetes)
 | `POST` | `/api/auth/register` | — | Cadastra usuário e dispara boas-vindas |
 | `POST` | `/api/auth/login` | — | Autentica e devolve o JWT |
 
-### Catalog API — catálogo relacional
+### Catalog API
 
 | Método | Rota | Auth | Descrição |
 |---|---|---|---|
 | `GET` | `/api/games` | — | Lista o catálogo *(cache)* |
-| `POST` | `/api/games` | Admin | Cria um jogo |
-| `PUT` | `/api/games/{id}` | Admin | Atualiza um jogo |
-| `DELETE` | `/api/games/{id}` | Admin | Inativa |
+| `POST` | `/api/games` | Admin | Cria um jogo *(indexa no Elasticsearch)* |
+| `PUT` | `/api/games/{id}` | Admin | Atualiza *(reindexa)* |
+| `DELETE` | `/api/games/{id}` | Admin | Inativa *(reindexa como inativo)* |
 | `POST` | `/api/games/{id}/reactivate` | Admin | Reativa |
-
-### Catalog API — catálogo expandido (MongoDB)
-
-| Método | Rota | Auth | Descrição |
-|---|---|---|---|
 | `GET` | `/api/games/{id}/details` | — | Documento expandido + resumo das notas *(cache)* |
-| `PUT` | `/api/games/{id}/details` | Admin | Cria ou substitui o documento |
-| `GET` | `/api/games/search` | — | Busca por texto, tag, gênero e preço *(cache)* |
-
-Parâmetros da busca: `q`, `tag`, `genero`, `precoMaximo`, `pagina`, `tamanho`.
-
-### Catalog API — avaliações (MongoDB)
-
-| Método | Rota | Auth | Descrição |
-|---|---|---|---|
-| `GET` | `/api/games/{id}/reviews` | — | Lista paginada *(cache)* |
-| `GET` | `/api/games/{id}/reviews/summary` | — | Total, nota média e distribuição *(cache)* |
+| `PUT` | `/api/games/{id}/details` | Admin | Cria ou substitui o documento *(reindexa)* |
+| `GET` | **`/api/games/search`** | — | **Busca avançada — fuzzy e relevância** *(cache)* |
+| `GET` | `/api/games/search/basic` | — | Busca simples no MongoDB (Fase 3) |
+| `POST` | `/api/games/search/reindex` | Admin | Reconstrói o índice |
+| `GET` | `/api/games/info` | — | Versão do código e pod que respondeu (acompanhar deploy) |
+| `GET` | `/api/games/{id}/reviews` | — | Avaliações paginadas *(cache)* |
+| `GET` | `/api/games/{id}/reviews/summary` | — | Total, média e distribuição *(cache)* |
 | `POST` | `/api/games/{id}/reviews` | ✅ | Cria ou atualiza a própria avaliação |
 | `DELETE` | `/api/games/{id}/reviews/me` | ✅ | Remove a própria avaliação |
-
-### Catalog API — biblioteca
-
-| Método | Rota | Auth | Descrição |
-|---|---|---|---|
 | `GET` | `/api/users/me/library` | ✅ | Jogos do usuário |
 | `POST` | `/api/users/me/library/games/{gameId}` | ✅ | Inicia a compra (**202**) |
 
@@ -586,8 +485,21 @@ Parâmetros da busca: `q`, `tag`, `genero`, `precoMaximo`, `pagina`, `tamanho`.
 | Rota | Descrição |
 |---|---|
 | `/health/live` | O processo está de pé |
-| `/health/ready` | As dependências respondem (SQLite e, no Catalog, MongoDB) |
+| `/health/ready` | As dependências respondem (banco relacional e, no Catalog, MongoDB) |
 | `/metrics` | Métricas no formato Prometheus |
+
+---
+
+## Custos e limpeza
+
+O cluster cobra por hora enquanto existir (2 VMs B2ms, discos, Load Balancer e IP público; o control plane do AKS no plano Free não é cobrado). Fora das gravações:
+
+```powershell
+az aks stop  --resource-group rg-fcg --name fcg-aks   # para os nós, mantém tudo
+az aks start --resource-group rg-fcg --name fcg-aks
+
+az group delete --name rg-fcg --yes --no-wait          # apaga tudo
+```
 
 ---
 
@@ -595,12 +507,13 @@ Parâmetros da busca: `q`, `tag`, `genero`, `precoMaximo`, `pagina`, `tamanho`.
 
 | Sintoma | Causa provável | O que fazer |
 |---|---|---|
-| Kong devolve **401** com token recém-emitido | `JWT_KEY` diferente entre Kong e Users API | Conferir `.env` e os Secrets; os três valores têm que ser iguais |
-| Kong devolve **404** | Caminho fora das rotas declaradas | `Invoke-RestMethod http://localhost:8001/routes` |
-| `/api/games/{id}/details` responde **404** | O jogo não existe no SQLite | Criar o jogo antes de enviar o documento expandido |
-| Catalog API não sobe | MongoDB ainda iniciando | `docker compose logs mongo`; o `depends_on` já aguarda o healthcheck |
-| Nenhum e-mail no Mailpit | Fila sem binding ou função parada | `docker compose logs notifications-function` e conferir as filas `notifications-*` no RabbitMQ |
-| Alvo *down* no Prometheus | Serviço ainda subindo | <http://localhost:9090/targets> |
-| Painel do Grafana vazio | Sem tráfego no intervalo | Gerar carga (passo 9 do roteiro) e reduzir a janela de tempo |
-| Cache sempre *miss* | Redis fora do ar | `docker compose logs redis`; a API degrada de propósito e continua respondendo |
-| HPA com `<unknown>` | `metrics-server` ausente | Instalar o metrics-server no cluster |
+| Pod em `CreateContainerConfigError` | Secret ainda não existe | Rode o workflow **Platform deploy** antes das pipelines dos serviços |
+| Pod em `ImagePullBackOff` | AKS sem `AcrPull` no ACR, ou tag inexistente | `az aks check-acr --resource-group rg-fcg --name fcg-aks --acr <acr>.azurecr.io` |
+| Pipeline falha no `azure/login` | Federated credential não bate com repo/branch | Conferir o subject `repo:<owner>/<repo>:ref:refs/heads/<branch>` no app `fcg-github-actions` |
+| `kong-proxy` sem `EXTERNAL-IP` | Load Balancer ainda sendo criado | Aguarde 1–2 min: `kubectl get svc kong-proxy -w` |
+| Busca responde `"motor": "mongodb"` | Elasticsearch fora ou ainda subindo | `kubectl logs statefulset/elasticsearch`; depois `POST /api/games/search/reindex` |
+| Elasticsearch em `Pending` | Nós sem memória livre | `kubectl describe pod elasticsearch-0`; aumente `quantidadeNos` ou `tamanhoNo` no Bicep |
+| Catalog/Users reiniciando no primeiro deploy | PostgreSQL ainda iniciando | A API tenta de novo com espera crescente; aguarde o `postgres-0` ficar `Ready` |
+| Kong devolve **401** com token recém-emitido | `JWT_KEY` diferente entre Kong e Users | Os três Secrets vêm do mesmo `JWT_KEY`; rode o Platform deploy de novo e reinicie as APIs |
+| Cache sempre *miss* | Redis fora do ar ou senha errada | `kubectl logs deploy/catalog-api`; a API degrada de propósito e continua respondendo |
+| HPA com `<unknown>` | Pods sem `resources.requests` ou recém-criados | Aguarde a primeira coleta do metrics-server (~1 min) |
