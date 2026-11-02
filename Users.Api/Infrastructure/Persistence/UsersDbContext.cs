@@ -20,7 +20,12 @@ public class UsersDbContext : DbContext
             entity.Property(e => e.Email).HasMaxLength(320);
             entity.Property(e => e.SenhaHash).HasMaxLength(500);
             entity.Property(e => e.Perfil).HasMaxLength(50);
-            entity.HasIndex(e => e.Email).IsUnique().HasFilter("\"Ativo\" = 1");
+            // E-mail unico entre usuarios ativos. O literal booleano muda por banco:
+            // SQLite guarda bool como inteiro; no PostgreSQL a coluna e boolean de verdade.
+            var filtroAtivo = Database.ProviderName?.Contains("Npgsql", StringComparison.OrdinalIgnoreCase) == true
+                ? "\"Ativo\" = true"
+                : "\"Ativo\" = 1";
+            entity.HasIndex(e => e.Email).IsUnique().HasFilter(filtroAtivo);
             entity.HasQueryFilter(e => e.Ativo);
         });
     }

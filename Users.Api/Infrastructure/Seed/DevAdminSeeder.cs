@@ -3,6 +3,7 @@ using Users.Api.Domain.Constants;
 using Users.Api.Domain.Entities;
 using Users.Api.Domain.Services;
 using Users.Api.Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
 namespace Users.Api.Infrastructure.Seed;
@@ -33,6 +34,13 @@ public class DevAdminSeeder
 
         var hash = HashPassword(password);
         var admin = new Usuario(_options.AdminName.Trim(), email, hash, Roles.Administrador);
-        await _usuarios.AddAsync(admin, cancellationToken);
+        try
+        {
+            await _usuarios.AddAsync(admin, cancellationToken);
+        }
+        catch (DbUpdateException)
+        {
+            // Duas replicas iniciando juntas no mesmo banco: a outra ja criou o admin.
+        }
     }
 }
