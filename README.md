@@ -10,7 +10,7 @@ Na Fase 3 ganhou **instrumentação de métricas** no formato Prometheus e endpo
 |---|---|
 | Mensageria | Consome `OrderPlacedEvent`, publica `PaymentProcessedEvent` |
 | Idempotência | Grava cada `OrderId` processado; reentrega não gera cobrança duplicada |
-| Persistência | SQLite via EF Core |
+| Persistência | EF Core — PostgreSQL em produção (Fase 4), SQLite local |
 | Observabilidade | Expõe `/metrics` (OpenTelemetry) |
 
 ## Simulação do pagamento
@@ -40,8 +40,10 @@ Este serviço **não é exposto pelo gateway**: ele participa da arquitetura ape
 
 | Variável | Padrão | Descrição |
 |---|---|---|
-| `ConnectionStrings__DefaultConnection` | `Data Source=payments.db` | SQLite |
-| `RabbitMq__Host` / `__Username` / `__Password` | `localhost` / `guest` / `guest` | Broker |
+| `Database__Provider` | `Sqlite` | `Postgres` em produção |
+| `ConnectionStrings__DefaultConnection` | `Data Source=payments.db` | Banco relacional |
+| `RabbitMq__Host` | `localhost` | Broker |
+| `RabbitMq__Username` / `__Password` | — | Sem elas, usa o padrão do broker local |
 | `Payments__SimulationMode` | `Random` | `Random`, `AlwaysApprove` ou `AlwaysReject` |
 | `Payments__ApprovalRate` | `0.92` | Taxa de aprovação no modo `Random` |
 | `Payments__RejectPrices__0` | `99.99` | Preço que sempre reprova |
@@ -82,15 +84,17 @@ Swagger em <http://localhost:5103/swagger>.
 docker build -t fcg/payments-api:latest . -f Payments.Api/Dockerfile
 ```
 
+## CI/CD (Fase 4)
+
+[`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml): build, imagem versionada, Trivy, push no ACR e rolling update no AKS. Detalhes no [README do fcg-platform](https://github.com/VHMoschini/fcg-platform#cicd-com-github-actions).
+
 ## Kubernetes
 
-Manifestos em [`k8s/`](k8s): `Deployment`, `Service`, `ConfigMap` e `Secret`. O HPA correspondente está em `fcg-platform/k8s/scaling/`.
+Manifestos em [`k8s/`](k8s) com Kustomize: `Deployment`, `Service`, `ConfigMap` e `kustomization.yaml`. O HPA está em `fcg-platform/k8s/scaling/`; o `payments-api-secret` é criado pela pipeline do `fcg-platform`.
 
 ```powershell
-kubectl apply -f k8s/
+kubectl apply -k k8s/
 ```
-
-Como o serviço é um consumidor de fila, escalar réplicas aumenta o paralelismo de processamento — a idempotência por `OrderId` garante que a mesma ordem não seja cobrada duas vezes.
 
 ## Repositórios relacionados
 
