@@ -66,6 +66,27 @@ services:
       timeout: 3s
       retries: 5
 
+  # Busca avancada do catalogo (Fase 4).
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "true"
+      xpack.security.http.ssl.enabled: "false"
+      xpack.security.transport.ssl.enabled: "false"
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:?defina ELASTIC_PASSWORD no .env}
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf -u elastic:$$ELASTIC_PASSWORD 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s' || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+
   mailpit:
     image: axllent/mailpit:latest
     ports:
@@ -106,7 +127,7 @@ services:
       KONG_ADMIN_ERROR_LOG: /dev/stderr
       KONG_LOG_LEVEL: notice
       # Segredo injetado no kong.yml pelo entrypoint abaixo.
-      FCG_JWT_KEY: ${JWT_KEY:-CHANGE_ME_DEV_KEY_MIN_32_CHARS_LONG!!}
+      FCG_JWT_KEY: ${JWT_KEY:?defina JWT_KEY no .env (copie o .env.example)}
     # Substitui o marcador __FCG_JWT_KEY__ pelo segredo real antes de o Kong ler a
     # configuracao declarativa. O arquivo versionado nunca carrega o segredo.
     entrypoint:
@@ -146,9 +167,10 @@ services:
       RabbitMq__Host: rabbitmq
       RabbitMq__Username: guest
       RabbitMq__Password: guest
-      Jwt__Key: ${JWT_KEY:-CHANGE_ME_DEV_KEY_MIN_32_CHARS_LONG!!}
+      Jwt__Key: ${JWT_KEY:?defina JWT_KEY no .env (copie o .env.example)}
       Jwt__Issuer: FCG
       Jwt__Audience: FCG
+      Seed__AdminPassword: ${SEED_ADMIN_PASSWORD:?defina SEED_ADMIN_PASSWORD no .env}
     volumes:
       - users-api-data:/app/data
     depends_on:
@@ -165,7 +187,7 @@ services:
       RabbitMq__Host: rabbitmq
       RabbitMq__Username: guest
       RabbitMq__Password: guest
-      Jwt__Key: ${JWT_KEY:-CHANGE_ME_DEV_KEY_MIN_32_CHARS_LONG!!}
+      Jwt__Key: ${JWT_KEY:?defina JWT_KEY no .env (copie o .env.example)}
       Jwt__Issuer: FCG
       Jwt__Audience: FCG
       # Persistencia poliglota: catalogo expandido e avaliacoes no MongoDB.
@@ -175,6 +197,11 @@ services:
       Cache__RedisEnabled: "true"
       Cache__RedisConnectionString: redis:6379
       Cache__InstanceName: "fcg:catalog:"
+      # Busca avancada (Fase 4).
+      Elasticsearch__Enabled: "true"
+      Elasticsearch__Url: http://elasticsearch:9200
+      Elasticsearch__Username: elastic
+      Elasticsearch__Password: ${ELASTIC_PASSWORD:?defina ELASTIC_PASSWORD no .env}
     volumes:
       - catalog-api-data:/app/data
     depends_on:
@@ -183,6 +210,8 @@ services:
       mongo:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      elasticsearch:
         condition: service_healthy
 
   payments-api:
@@ -256,7 +285,7 @@ services:
     image: grafana/grafana:11.4.0
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:?defina GRAFANA_PASSWORD no .env}
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/fcg-overview.json
     ports:
@@ -277,3 +306,4 @@ volumes:
   azurite-data:
   prometheus-data:
   grafana-data:
+  elasticsearch-data:

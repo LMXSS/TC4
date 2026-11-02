@@ -4,6 +4,9 @@
 # controlar leases e singletons sempre que existe trigger que nao e HTTP. Rodando a
 # funcao dentro do cluster, o Azurite ocupa esse lugar; na Azure, a Storage Account
 # provisionada pelo Bicep.
+#
+# Fase 4: em vez da conta padrao do emulador (devstoreaccount1, cuja chave e publica),
+# o Azurite sobe com uma conta propria cuja chave vem do Secret azurite-secret.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -32,6 +35,13 @@ spec:
             - --tableHost
             - 0.0.0.0
             - --skipApiVersionCheck
+          env:
+            # Formato "conta:chave". Montado pelo k8s/secrets/create-secrets.sh.
+            - name: AZURITE_ACCOUNTS
+              valueFrom:
+                secretKeyRef:
+                  name: azurite-secret
+                  key: accounts
           ports:
             - containerPort: 10000
               name: blob

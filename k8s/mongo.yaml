@@ -1,4 +1,7 @@
 # MongoDB — catalogo expandido e sistema de avaliacoes da Catalog API.
+#
+# Fase 4: autenticacao habilitada. Usuario e senha do root vem do Secret mongo-secret;
+# a Catalog API recebe a connection string completa pelo Secret catalog-api-secret.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -39,6 +42,16 @@ spec:
           env:
             - name: MONGO_INITDB_DATABASE
               value: fcg_catalog
+            - name: MONGO_INITDB_ROOT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-secret
+                  key: username
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-secret
+                  key: password
           volumeMounts:
             - name: data
               mountPath: /data/db
