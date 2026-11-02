@@ -1,0 +1,96 @@
+# Funcao serverless de notificacoes rodando dentro do cluster.
+#
+# A imagem e a mesma do repositorio fcg-notifications-function, construida sobre o host
+# oficial de Azure Functions v4. Ela substitui o Deployment notifications-api da Fase 2:
+# o processo continua existindo como pod, mas quem decide invocar o codigo e o host de
+# Functions ao ver mensagem na fila — e o HPA acompanha essa carga.
+#
+# Na Azure, o mesmo artefato tambem pode rodar como Function App (infra/main.bicep).
+#
+# Fase 4: o manifesto passou a morar neste repositorio, junto da pipeline que gera a
+# imagem. As credenciais (RabbitMQ e storage do host) vem do Secret
+# notifications-function-secret, criado pela pipeline do fcg-platform.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: notifications-function-config
+  labels:
+    app: notifications-function
+data:
+  FUNCTIONS_WORKER_RUNTIME: "dotnet-isolated"
+  RabbitMqUserCreatedQueue: "notifications-user-created"
+  RabbitMqPaymentProcessedQueue: "notifications-payment-processed"
+  Smtp__Enabled: "true"
+  Smtp__Host: "mailpit"
+  Smtp__Port: "1025"
+  Smtp__UseStartTls: "false"
+  Smtp__FromAddress: "noreply@fcg.local"
+  Smtp__FromName: "FIAP Cloud Games"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notifications-function
+  labels:
+    app: notifications-function
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: notifications-function
+  template:
+    metadata:
+      labels:
+        app: notifications-function
+    spec:
+      containers:
+        - name: notifications-function
+          # Nome logico: o kustomization.yaml troca pelo registry e pela tag certos.
+          image: notifications-function
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: notifications-function-config
+          env:
+            - name: RabbitMqConnection
+              valueFrom:
+                secretKeyRef:
+                  name: notifications-function-secret
+                  key: rabbitmq-connection
+            - name: AzureWebJobsStorage
+              valueFrom:
+                secretKeyRef:
+                  name: notifications-function-secret
+                  key: azure-webjobs-storage
+          ports:
+            - containerPort: 80
+              name: http
+          readinessProbe:
+            tcpSocket:
+              port: 80
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            tcpSocket:
+              port: 80
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              memory: 640Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notifications-function
+spec:
+  selector:
+    app: notifications-function
+  ports:
+    - port: 80
+      targetPort: 80
