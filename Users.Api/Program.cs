@@ -1,7 +1,6 @@
 using System.Text;
 using MassTransit;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Users.Api.Infrastructure.Persistence;
@@ -17,10 +16,8 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c => c.SwaggerDoc("v1", new() { Title = "FCG Users API", Version = "v1" }));
 
-var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
-    ?? throw new InvalidOperationException("DefaultConnection ausente.");
-connectionString = ResolveSqlitePath(connectionString, builder.Environment.ContentRootPath);
-builder.Services.AddDbContext<UsersDbContext>(o => o.UseSqlite(connectionString));
+// SQLite no desenvolvimento local; PostgreSQL compartilhado entre as replicas em producao.
+builder.Services.AddFcgDatabase<UsersDbContext>(builder.Configuration, builder.Environment.ContentRootPath);
 
 builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptions.SectionName));
 builder.Services.Configure<DevAdminSeedOptions>(builder.Configuration.GetSection(DevAdminSeedOptions.SectionName));
@@ -57,8 +54,10 @@ builder.Services.AddAuthorization();
 builder.Services.AddFcgObservability();
 
 var rabbitHost = builder.Configuration["RabbitMq:Host"] ?? "localhost";
-var rabbitUser = builder.Configuration["RabbitMq:Username"] ?? "guest";
-var rabbitPass = builder.Configuration["RabbitMq:Password"] ?? "guest";
+// Credenciais do broker chegam por variavel de ambiente (Secret do Kubernetes);
+// nenhuma senha fica no codigo. Sem elas, o MassTransit usa o padrao do broker local.
+var rabbitUser = builder.Configuration["RabbitMq:Username"];
+var rabbitPass = builder.Configuration["RabbitMq:Password"];
 
 builder.Services.AddMassTransit(x =>
 {
@@ -66,8 +65,11 @@ builder.Services.AddMassTransit(x =>
     {
         cfg.Host(rabbitHost, "/", h =>
         {
-            h.Username(rabbitUser);
-            h.Password(rabbitPass);
+            if (!string.IsNullOrWhiteSpace(rabbitUser))
+            {
+                h.Username(rabbitUser);
+                h.Password(rabbitPass ?? string.Empty);
+            }
         });
         cfg.ConfigureEndpoints(context);
     });
@@ -78,7 +80,8 @@ var app = builder.Build();
 await using (var scope = app.Services.CreateAsyncScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<UsersDbContext>();
-    await db.Database.MigrateAsync();
+    await DatabaseSetup.InitializeDatabaseAsync(
+        db, app.Configuration, app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Database"));
     var seeder = scope.ServiceProvider.GetRequiredService<DevAdminSeeder>();
     await seeder.SeedAsync();
 }
@@ -107,13 +110,3 @@ app.MapGet("/health/ready", async (UsersDbContext db, CancellationToken ct) =>
     .WithTags("Health").AllowAnonymous();
 
 app.Run();
-
-static string ResolveSqlitePath(string connectionString, string contentRoot)
-{
-    var b = new SqliteConnectionStringBuilder(connectionString);
-    var ds = b.DataSource;
-    if (string.IsNullOrEmpty(ds) || ds.Equals(":memory:", StringComparison.OrdinalIgnoreCase) || Path.IsPathRooted(ds))
-        return connectionString;
-    b.DataSource = Path.GetFullPath(Path.Combine(contentRoot, ds));
-    return b.ConnectionString;
-}

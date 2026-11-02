@@ -4,12 +4,14 @@ Cadastro, autenticação e autorização de usuários da **FIAP Cloud Games**. �
 
 Na Fase 3 ganhou **instrumentação de métricas** no formato Prometheus e endpoints de health para as probes do Kubernetes.
 
+Na **Fase 4** ganhou **testes unitários**, **pipeline de CI/CD** com deploy no AKS, **PostgreSQL** em produção (compartilhado entre as réplicas) e deixou de ter qualquer credencial no código.
+
 ## Responsabilidades
 
 | Área | O quê |
 |---|---|
 | Autenticação | Registro, login e emissão de JWT (HS256) |
-| Persistência | SQLite via EF Core |
+| Persistência | EF Core — PostgreSQL em produção, SQLite local e nos testes |
 | Mensageria | Publica `UserCreatedEvent` no cadastro |
 | Observabilidade | Expõe `/metrics` (OpenTelemetry) |
 
@@ -41,12 +43,17 @@ O claim `iss` é a chave que liga o token ao consumer configurado no Kong. **`Jw
 
 | Variável | Padrão | Descrição |
 |---|---|---|
-| `ConnectionStrings__DefaultConnection` | `Data Source=users.db` | SQLite |
-| `Jwt__Key` | — | Chave de assinatura, mínimo 32 caracteres |
+| `Database__Provider` | `Sqlite` | `Postgres` em produção |
+| `ConnectionStrings__DefaultConnection` | `Data Source=users.db` | Banco relacional |
+| `Jwt__Key` | — *(obrigatória)* | Chave de assinatura, mínimo 32 caracteres |
 | `Jwt__Issuer` / `Jwt__Audience` | `FCG` / `FCG` | Emissor e audiência |
 | `Jwt__ExpiresMinutes` | `120` | Validade do token |
-| `RabbitMq__Host` / `__Username` / `__Password` | `localhost` / `guest` / `guest` | Broker |
-| `Seed__AdminEmail` / `__AdminPassword` / `__AdminName` | — | Admin criado no start (apenas em Development) |
+| `RabbitMq__Host` | `localhost` | Broker |
+| `RabbitMq__Username` / `__Password` | — | Sem elas, usa o padrão do broker local |
+| `Seed__AdminEmail` / `__AdminName` | `admin@fcg.local` / `Administrador` | Admin criado no start |
+| `Seed__AdminPassword` | — | Senha do admin. Sem ela, nenhum admin é criado |
+
+Nenhuma credencial tem valor padrão: em produção chegam do Secret `users-api-secret` (criado pela pipeline do `fcg-platform`); localmente, do `.env` do compose ou de `dotnet user-secrets`.
 
 ## Métricas expostas
 
@@ -74,10 +81,12 @@ Acesso pelo gateway: <http://localhost:8000/api/auth/login>.
 docker run -d --name fcg-rabbit -p 5672:5672 -p 15672:15672 rabbitmq:3.13-management-alpine
 
 cd Users.Api
+dotnet user-secrets set "Jwt:Key" "<chave com 32+ caracteres>"
+dotnet user-secrets set "Seed:AdminPassword" "<senha com letra, numero e especial>"
 dotnet run
 ```
 
-Swagger em <http://localhost:5101/swagger>. Em Development o admin de seed é `admin@fcg.local` / `Admin@123` (ver `appsettings.Development.json`).
+Swagger em <http://localhost:5101/swagger>. O admin de seed é `admin@fcg.local`, com a senha definida acima.
 
 ### Docker
 
@@ -86,15 +95,34 @@ Swagger em <http://localhost:5101/swagger>. Em Development o admin de seed é `a
 docker build -t fcg/users-api:latest . -f Users.Api/Dockerfile
 ```
 
-## Kubernetes
-
-Manifestos em [`k8s/`](k8s): `Deployment`, `Service`, `ConfigMap` e `Secret`.
+## Testes
 
 ```powershell
-kubectl apply -f k8s/
+dotnet test
 ```
 
-O Deployment traz as anotações `prometheus.io/scrape` para entrar na coleta automática, e probes apontando para `/health/ready` e `/health/live`.
+[`Users.Api.Tests`](Users.Api.Tests) (xUnit + NSubstitute):
+
+| Classe | O que garante |
+|---|---|
+| `CredentialValidationTests` | Formato de e-mail e regra de senha forte, com a mensagem de cada recusa |
+| `JwtTokenGeneratorTests` | Token HS256 com `sub`, `email`, `name`, `role` e versão da credencial; não valida com outra chave; expiração mínima de 5 min |
+| `AuthServiceTests` | Cadastro grava hash BCrypt e publica `UserCreatedEvent`; e-mail duplicado e dados inválidos são recusados; login certo devolve token e o errado responde 401 com a mesma mensagem (SQLite em memória, broker substituído por dublê) |
+| `UsuarioTests` | Regras da entidade e perfis válidos |
+
+## CI/CD
+
+[`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml): **Build & Test → imagem `<run>-<sha7>` → Trivy → push no ACR → `kubectl apply -k k8s/` com rolling update → rollback automático se o rollout falhar.** Detalhes no [README do fcg-platform](https://github.com/VHMoschini/fcg-platform#cicd-com-github-actions).
+
+## Kubernetes
+
+Manifestos em [`k8s/`](k8s) com Kustomize: `Deployment` (rolling update sem downtime), `Service`, `ConfigMap`, `HorizontalPodAutoscaler` e `kustomization.yaml`.
+
+```powershell
+kubectl apply -k k8s/
+```
+
+Não há `Secret` neste repositório: o `users-api-secret` é criado pela pipeline do `fcg-platform`.
 
 ## Repositórios relacionados
 

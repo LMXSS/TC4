@@ -5,8 +5,17 @@ metadata:
   labels:
     app: users-api
 data:
-  ASPNETCORE_ENVIRONMENT: "Development"
+  ASPNETCORE_ENVIRONMENT: "Production"
   ASPNETCORE_URLS: "http://+:8080"
   RabbitMq__Host: "rabbitmq"
+
+  # Banco relacional compartilhado entre as replicas (k8s/postgres.yaml no fcg-platform).
+  # A connection string, com a senha, vem do Secret.
+  Database__Provider: "Postgres"
+
   Jwt__Issuer: "FCG"
   Jwt__Audience: "FCG"
+
+  # Administrador inicial: e-mail aqui, senha no Secret users-api-secret.
+  Seed__AdminEmail: "admin@fcg.local"
+  Seed__AdminName: "Administrador"
