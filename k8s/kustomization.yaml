@@ -1,0 +1,14 @@
+# Manifestos da funcao de notificacoes.
+#
+#   kubectl apply -k k8s/
+#
+# A pipeline (.github/workflows/ci-cd.yml) troca a imagem antes de aplicar:
+#   kustomize edit set image notifications-function=<acr>.azurecr.io/notifications-function:<sha>
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - notifications-function.yaml
+images:
+  - name: notifications-function
+    newName: fcg/notifications-function
+    newTag: latest

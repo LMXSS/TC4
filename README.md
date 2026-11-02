@@ -29,7 +29,7 @@ Todas as chaves são App Settings do Function App (ou variáveis de ambiente no 
 
 | Chave | Descrição | Exemplo |
 |---|---|---|
-| `RabbitMqConnection` | Connection string AMQP | `amqp://guest:guest@rabbitmq:5672/` |
+| `RabbitMqConnection` | Connection string AMQP | `amqp://<usuario>:<senha>@rabbitmq:5672/` (Secret `notifications-function-secret` no cluster) |
 | `RabbitMqUserCreatedQueue` | Fila de usuários criados | `notifications-user-created` |
 | `RabbitMqPaymentProcessedQueue` | Fila de pagamentos processados | `notifications-payment-processed` |
 | `AzureWebJobsStorage` | Storage do host de Functions (Azurite no local) | `UseDevelopmentStorage=true` |
@@ -77,6 +77,14 @@ az login
 **Por que Elastic Premium e não Consumption:** triggers que não são HTTP dependem do *runtime scale monitoring* para que a plataforma leia a profundidade da fila e decida escalar. Esse recurso não existe no plano Consumption, então o template habilita `functionsRuntimeScaleMonitoringEnabled` em um plano EP1.
 
 O broker precisa estar acessível pelo Function App — RabbitMQ com endpoint público e TLS (`amqps://`), ou o Function App integrado à VNet onde o broker roda.
+
+## Kubernetes e CI/CD (Fase 4)
+
+O manifesto que roda a função no AKS fica em [`k8s/`](k8s) (com `kustomization.yaml`), e a pipeline [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml) faz build, imagem versionada, Trivy, push no ACR e rolling update no cluster a cada push na `master`. As credenciais (AMQP e storage do host) chegam pelo Secret `notifications-function-secret`, criado pela pipeline do `fcg-platform`.
+
+```powershell
+kubectl apply -k k8s/
+```
 
 ## Estrutura
 
