@@ -4,12 +4,15 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>Payments.Api</RootNamespace>
+    <!-- Segredos de desenvolvimento local: dotnet user-secrets set "Jwt:Key" "..." -->
+    <UserSecretsId>fcg-payments-7db442bb</UserSecretsId>
     <AssemblyName>Payments.Api</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="MassTransit" Version="8.3.4" />
     <PackageReference Include="MassTransit.RabbitMQ" Version="8.3.4" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.11" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="8.0.11" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.11">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
