@@ -1,0 +1,144 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rabbitmq-config
+  labels:
+    app: rabbitmq
+data:
+  # Fase 4: sem usuario fixo. O usuario padrao e criado a partir de RABBITMQ_DEFAULT_USER/PASS,
+  # lidos do Secret rabbitmq-secret. Por isso as definicoes NAO sao carregadas no boot
+  # (load_definitions impede a criacao do usuario padrao): elas sao importadas logo depois
+  # que o no sobe, pelo hook postStart do container.
+  rabbitmq.conf: |
+    loopback_users = none
+  # Declara as filas notifications-* e os bindings com os exchanges fanout do
+  # MassTransit. Sao essas filas que acionam a funcao serverless.
+  definitions.json: |
+    {
+      "rabbit_version": "3.13.0",
+      "vhosts": [ { "name": "/" } ],
+      "exchanges": [
+        {
+          "name": "FCG.Messaging.Contracts:UserCreatedEvent",
+          "vhost": "/", "type": "fanout",
+          "durable": true, "auto_delete": false, "internal": false, "arguments": {}
+        },
+        {
+          "name": "FCG.Messaging.Contracts:PaymentProcessedEvent",
+          "vhost": "/", "type": "fanout",
+          "durable": true, "auto_delete": false, "internal": false, "arguments": {}
+        }
+      ],
+      "queues": [
+        {
+          "name": "notifications-user-created",
+          "vhost": "/", "durable": true, "auto_delete": false,
+          "arguments": { "x-queue-type": "classic" }
+        },
+        {
+          "name": "notifications-payment-processed",
+          "vhost": "/", "durable": true, "auto_delete": false,
+          "arguments": { "x-queue-type": "classic" }
+        }
+      ],
+      "bindings": [
+        {
+          "source": "FCG.Messaging.Contracts:UserCreatedEvent",
+          "vhost": "/", "destination": "notifications-user-created",
+          "destination_type": "queue", "routing_key": "", "arguments": {}
+        },
+        {
+          "source": "FCG.Messaging.Contracts:PaymentProcessedEvent",
+          "vhost": "/", "destination": "notifications-payment-processed",
+          "destination_type": "queue", "routing_key": "", "arguments": {}
+        }
+      ]
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rabbitmq
+  labels:
+    app: rabbitmq
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rabbitmq
+  template:
+    metadata:
+      labels:
+        app: rabbitmq
+    spec:
+      containers:
+        - name: rabbitmq
+          image: rabbitmq:3.13-management-alpine
+          ports:
+            - containerPort: 5672
+              name: amqp
+            - containerPort: 15672
+              name: mgmt
+          env:
+            - name: RABBITMQ_DEFAULT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-secret
+                  key: username
+            - name: RABBITMQ_DEFAULT_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-secret
+                  key: password
+          lifecycle:
+            postStart:
+              exec:
+                command:
+                  - sh
+                  - -c
+                  - rabbitmqctl await_startup --timeout 180 && rabbitmqctl import_definitions /etc/rabbitmq/definitions.json
+          volumeMounts:
+            - name: config
+              mountPath: /etc/rabbitmq/rabbitmq.conf
+              subPath: rabbitmq.conf
+            - name: config
+              mountPath: /etc/rabbitmq/definitions.json
+              subPath: definitions.json
+          readinessProbe:
+            # check_port_connectivity so passa quando o listener AMQP aceita conexoes;
+            # "ping" responde antes disso e libera dependentes cedo demais.
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "ping"]
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 768Mi
+      volumes:
+        - name: config
+          configMap:
+            name: rabbitmq-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+spec:
+  selector:
+    app: rabbitmq
+  ports:
+    - name: amqp
+      port: 5672
+      targetPort: 5672
+    - name: mgmt
+      port: 15672
+      targetPort: 15672
