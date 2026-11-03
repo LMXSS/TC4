@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: catalog-api-config
+  labels:
+    app: catalog-api
+data:
+  ASPNETCORE_ENVIRONMENT: "Production"
+  ASPNETCORE_URLS: "http://+:8080"
+  RabbitMq__Host: "rabbitmq"
+
+  # Banco relacional compartilhado entre as replicas (k8s/postgres.yaml no fcg-platform).
+  # A connection string, com a senha, vem do Secret.
+  Database__Provider: "Postgres"
+
+  Jwt__Issuer: "FCG"
+  Jwt__Audience: "FCG"
+
+  # Persistencia poliglota — MongoDB guarda o catalogo expandido e as avaliacoes.
+  Mongo__Database: "fcg_catalog"
+  Mongo__GameDetailsCollection: "game_details"
+  Mongo__ReviewsCollection: "game_reviews"
+
+  # Cache distribuido — TTL por tipo de consulta, em segundos.
+  Cache__RedisEnabled: "true"
+  Cache__InstanceName: "fcg:catalog:"
+  Cache__GamesListSeconds: "60"
+  Cache__GameDetailsSeconds: "300"
+  Cache__ReviewsSeconds: "120"
+  Cache__SearchSeconds: "90"
+
+  # Busca avancada — Elasticsearch no proprio cluster (k8s/elasticsearch.yaml no fcg-platform).
+  Elasticsearch__Enabled: "true"
+  Elasticsearch__Url: "http://elasticsearch:9200"
+  Elasticsearch__IndexName: "fcg-games"
+  Elasticsearch__ReindexOnStartupIfEmpty: "true"
