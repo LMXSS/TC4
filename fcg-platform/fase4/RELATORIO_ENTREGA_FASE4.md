@@ -29,17 +29,19 @@
 | Item | Link |
 |---|---|
 | **Vídeo "Pitch Final"** | `PREENCHER` |
-| **Documentação (README detalhado)** | https://github.com/VHMoschini/fcg-platform/blob/main/README.md |
+| **Documentação (README detalhado)** | https://github.com/LMXSS/TC4/blob/main/fcg-platform/README.md |
 
-### Repositórios
+### Repositório
 
-| Repositório | Papel | Link |
+**https://github.com/LMXSS/TC4** — monorepo com os cinco projetos, um por pasta:
+
+| Pasta | Papel | Link |
 |---|---|---|
-| `fcg-platform` | Bicep da Azure, manifestos da infra, Kong, observabilidade, pipeline da plataforma | https://github.com/VHMoschini/fcg-platform |
-| `fcg-users-api` | Cadastro, autenticação e JWT — com testes e pipeline | https://github.com/VHMoschini/fcg-users-api |
-| `fcg-catalog-api` | Catálogo, **busca avançada (Elasticsearch)**, MongoDB, Redis — com testes e pipeline | https://github.com/VHMoschini/fcg-catalog-api |
-| `fcg-payments-api` | Simulação de pagamento — com pipeline | https://github.com/VHMoschini/fcg-payments-api |
-| `fcg-notifications-function` | Notificações (Azure Function) — com pipeline | https://github.com/VHMoschini/fcg-notifications-function |
+| `fcg-platform` | Bicep da Azure, manifestos da infra, Kong, observabilidade, pipeline da plataforma | https://github.com/LMXSS/TC4/tree/main/fcg-platform |
+| `fcg-users-api` | Cadastro, autenticação e JWT — com testes e pipeline | https://github.com/LMXSS/TC4/tree/main/fcg-users-api |
+| `fcg-catalog-api` | Catálogo, **busca avançada (Elasticsearch)**, MongoDB, Redis — com testes e pipeline | https://github.com/LMXSS/TC4/tree/main/fcg-catalog-api |
+| `fcg-payments-api` | Simulação de pagamento — com pipeline | https://github.com/LMXSS/TC4/tree/main/fcg-payments-api |
+| `fcg-notifications-function` | Notificações (Azure Function) — com pipeline | https://github.com/LMXSS/TC4/tree/main/fcg-notifications-function |
 
 ---
 
@@ -93,7 +95,7 @@ Extras: analisador com `asciifolding` (acentos), filtros por gênero/tag/preço 
 
 ### 3.4 Automação de CI/CD e GitOps
 
-**GitHub Actions**, uma pipeline em **cada um dos cinco repositórios** (o mínimo exigido era UsersAPI e CatalogAPI).
+**GitHub Actions**, uma pipeline para **cada um dos cinco projetos** (`.github/workflows/`, cada uma disparando só quando a pasta dela muda) (o mínimo exigido era UsersAPI e CatalogAPI).
 
 | Etapa exigida | Implementação |
 |---|---|
@@ -139,12 +141,12 @@ Roteiro completo em `fcg-platform/fase4/ROTEIRO_VIDEO_FASE4.md`.
 Guia completo no README do `fcg-platform`, seção *Subindo na Azure (AKS)*. Resumo:
 
 ```powershell
-# Os cinco repositórios lado a lado
-cd fcg-platform\infra\azure
+git clone https://github.com/LMXSS/TC4.git
+cd TC4\fcg-platform\infra\azure
 .\setup-azure.ps1                 # Bicep (ACR + AKS) + OIDC + GitHub Secrets
 
-# GitHub: fcg-platform → Actions → Platform deploy → Run workflow
-# GitHub: cada serviço → Actions → CI/CD → Run workflow (ou push na main)
+# GitHub: Actions → Platform deploy → Run workflow
+# GitHub: Actions → cada "CI/CD - ..." → Run workflow (ou push na main)
 
 kubectl get svc kong-proxy        # IP público do gateway
 ```

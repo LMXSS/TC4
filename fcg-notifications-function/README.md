@@ -80,7 +80,7 @@ O broker precisa estar acessível pelo Function App — RabbitMQ com endpoint p�
 
 ## Kubernetes e CI/CD (Fase 4)
 
-O manifesto que roda a função no AKS fica em [`k8s/`](k8s) (com `kustomization.yaml`), e a pipeline [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml) faz build, imagem versionada, Trivy, push no ACR e rolling update no cluster a cada push na `master`. As credenciais (AMQP e storage do host) chegam pelo Secret `notifications-function-secret`, criado pela pipeline do `fcg-platform`.
+O manifesto que roda a função no AKS fica em [`k8s/`](k8s) (com `kustomization.yaml`), e a pipeline [`.github/workflows/notifications-function.yml`](../.github/workflows/notifications-function.yml) faz build, imagem versionada, Trivy, push no ACR e rolling update no cluster a cada push na `master`. As credenciais (AMQP e storage do host) chegam pelo Secret `notifications-function-secret`, criado pela pipeline do `fcg-platform`.
 
 ```powershell
 kubectl apply -k k8s/
@@ -107,11 +107,11 @@ fcg-notifications-function/
 * **No ambiente local:** os logs saem no stdout do container e são coletados junto com os demais serviços da stack.
 * Toda invocação registra o `InvocationId`, o identificador do evento e o destinatário, o que permite correlacionar a mensagem no RabbitMQ com o e-mail entregue no Mailpit.
 
-## Repositórios relacionados
+## Serviços relacionados (pastas deste repositório)
 
 | Repositório | Papel |
 |---|---|
-| [`fcg-platform`](https://github.com/VHMoschini/fcg-platform) | Orquestração: compose, Kubernetes, Kong, Prometheus/Grafana |
-| [`fcg-users-api`](https://github.com/VHMoschini/fcg-users-api) | Publica `UserCreatedEvent` |
-| [`fcg-catalog-api`](https://github.com/VHMoschini/fcg-catalog-api) | Publica `OrderPlacedEvent` |
-| [`fcg-payments-api`](https://github.com/VHMoschini/fcg-payments-api) | Publica `PaymentProcessedEvent` |
+| [`fcg-platform`](../fcg-platform/) | Orquestração: compose, Kubernetes, Kong, Prometheus/Grafana |
+| [`fcg-users-api`](../fcg-users-api/) | Publica `UserCreatedEvent` |
+| [`fcg-catalog-api`](../fcg-catalog-api/) | Publica `OrderPlacedEvent` |
+| [`fcg-payments-api`](../fcg-payments-api/) | Publica `PaymentProcessedEvent` |

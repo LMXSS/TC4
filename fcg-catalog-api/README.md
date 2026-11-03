@@ -274,7 +274,7 @@ dotnet test
 
 ## CI/CD
 
-[`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml): **Build & Test → imagem `<run>-<sha7>` → Trivy → push no ACR → `kubectl apply -k k8s/` com rolling update → rollback automático se o rollout falhar.** Detalhes no [README do fcg-platform](https://github.com/VHMoschini/fcg-platform#cicd-com-github-actions).
+[`.github/workflows/catalog-api.yml`](../.github/workflows/catalog-api.yml): **Build & Test → imagem `<run>-<sha7>` → Trivy → push no ACR → `kubectl apply -k k8s/` com rolling update → rollback automático se o rollout falhar.** Detalhes no [README do fcg-platform](../fcg-platform/README.md#cicd-com-github-actions).
 
 ## Kubernetes
 
@@ -286,11 +286,11 @@ kubectl apply -k k8s/
 
 Não há `Secret` neste repositório: o `catalog-api-secret` é criado pela pipeline do `fcg-platform` a partir dos GitHub Secrets.
 
-## Repositórios relacionados
+## Serviços relacionados (pastas deste repositório)
 
 | Repositório | Papel |
 |---|---|
-| [`fcg-platform`](https://github.com/VHMoschini/fcg-platform) | Orquestração — comece por aqui |
-| [`fcg-users-api`](https://github.com/VHMoschini/fcg-users-api) | Emite o JWT que este serviço valida |
-| [`fcg-payments-api`](https://github.com/VHMoschini/fcg-payments-api) | Processa o pagamento do pedido |
-| [`fcg-notifications-function`](https://github.com/VHMoschini/fcg-notifications-function) | Notifica o usuário por e-mail |
+| [`fcg-platform`](../fcg-platform/) | Orquestração — comece por aqui |
+| [`fcg-users-api`](../fcg-users-api/) | Emite o JWT que este serviço valida |
+| [`fcg-payments-api`](../fcg-payments-api/) | Processa o pagamento do pedido |
+| [`fcg-notifications-function`](../fcg-notifications-function/) | Notifica o usuário por e-mail |

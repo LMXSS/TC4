@@ -1,10 +1,10 @@
-# Stack completa da FIAP Cloud Games — Fase 3.
+# Stack completa da FIAP Cloud Games — Fase 4.
 #
-# Os repositorios dos microsservicos sao clonados lado a lado com este, e cada build
-# aponta para o contexto do repositorio vizinho:
+# Os microsservicos sao pastas vizinhas desta no repositorio TC4, e cada build aponta
+# para o contexto da pasta vizinha:
 #
-#   D:\TechChallenge2\
-#     ├─ fcg-platform\            <- este repositorio
+#   TC4\
+#     ├─ fcg-platform\            <- esta pasta
 #     ├─ fcg-users-api\
 #     ├─ fcg-catalog-api\
 #     ├─ fcg-payments-api\

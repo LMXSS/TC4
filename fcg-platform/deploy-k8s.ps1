@@ -2,8 +2,8 @@
 # Secrets, infraestrutura, as 3 APIs, a funcao serverless, o gateway Kong e a
 # observabilidade.
 #
-# Fase 4: na nuvem quem faz isso e a pipeline (fcg-platform/.github/workflows/platform-deploy.yml
-# e o ci-cd.yml de cada servico). Este script continua servindo para o cluster local.
+# Fase 4: na nuvem quem faz isso e a pipeline (.github/workflows/platform.yml na raiz do
+# repositorio, mais a pipeline de cada servico). Este script continua servindo para o cluster local.
 #
 # Os manifestos das APIs vivem na pasta k8s/ da RAIZ de cada repositorio de API
 # (nao neste repo), entao o script precisa saber onde eles estao. Os manifestos de
@@ -61,7 +61,7 @@ foreach ($c in $candidates) {
 
 if (-not $rootPath) {
     Write-Host "Nao encontrei as pastas k8s/ das APIs." -ForegroundColor Red
-    Write-Host "Clone os repos lado a lado e aponte a pasta que os contem:" -ForegroundColor Yellow
+    Write-Host "Rode a partir do clone do TC4 (as pastas fcg-* ficam lado a lado) ou aponte a pasta:" -ForegroundColor Yellow
     Write-Host "  .\deploy-k8s.ps1 -ReposRoot C:\caminho\para\os\repos" -ForegroundColor Gray
     Write-Host "Esperado: <ReposRoot>\fcg-users-api\k8s\ (e os outros 3)" -ForegroundColor Gray
     exit 1

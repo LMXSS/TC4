@@ -112,7 +112,7 @@ dotnet test
 
 ## CI/CD
 
-[`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml): **Build & Test → imagem `<run>-<sha7>` → Trivy → push no ACR → `kubectl apply -k k8s/` com rolling update → rollback automático se o rollout falhar.** Detalhes no [README do fcg-platform](https://github.com/VHMoschini/fcg-platform#cicd-com-github-actions).
+[`.github/workflows/users-api.yml`](../.github/workflows/users-api.yml): **Build & Test → imagem `<run>-<sha7>` → Trivy → push no ACR → `kubectl apply -k k8s/` com rolling update → rollback automático se o rollout falhar.** Detalhes no [README do fcg-platform](../fcg-platform/README.md#cicd-com-github-actions).
 
 ## Kubernetes
 
@@ -124,10 +124,10 @@ kubectl apply -k k8s/
 
 Não há `Secret` neste repositório: o `users-api-secret` é criado pela pipeline do `fcg-platform`.
 
-## Repositórios relacionados
+## Serviços relacionados (pastas deste repositório)
 
 | Repositório | Papel |
 |---|---|
-| [`fcg-platform`](https://github.com/VHMoschini/fcg-platform) | Orquestração — comece por aqui |
-| [`fcg-catalog-api`](https://github.com/VHMoschini/fcg-catalog-api) | Consome o token emitido aqui |
-| [`fcg-notifications-function`](https://github.com/VHMoschini/fcg-notifications-function) | Consome `UserCreatedEvent` e envia as boas-vindas |
+| [`fcg-platform`](../fcg-platform/) | Orquestração — comece por aqui |
+| [`fcg-catalog-api`](../fcg-catalog-api/) | Consome o token emitido aqui |
+| [`fcg-notifications-function`](../fcg-notifications-function/) | Consome `UserCreatedEvent` e envia as boas-vindas |

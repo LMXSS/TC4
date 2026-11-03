@@ -1,6 +1,6 @@
 # FCG Platform — orquestração da FIAP Cloud Games
 
-Repositório central da plataforma. Reúne a infraestrutura como código da Azure, os manifestos Kubernetes, a pipeline da plataforma, a configuração do API Gateway e a stack de observabilidade dos microsserviços da FCG.
+Pasta central da plataforma no repositório [TC4](../README.md). Reúne a infraestrutura como código da Azure, os manifestos Kubernetes, a pipeline da plataforma, a configuração do API Gateway e a stack de observabilidade dos microsserviços da FCG.
 
 > **Fase 4 — Automação, performance e portabilidade.** A plataforma sai do cluster local e passa a rodar no **Azure Kubernetes Service (AKS)**, com imagens privadas no **Azure Container Registry (ACR)**, deploy contínuo por **GitHub Actions** com rolling update sem downtime, **busca avançada com Elasticsearch**, banco relacional compartilhado (**PostgreSQL**) e **nenhuma credencial em código ou YAML**.
 
@@ -10,7 +10,7 @@ Repositório central da plataforma. Reúne a infraestrutura como código da Azur
 
 1. [O que mudou na Fase 4](#o-que-mudou-na-fase-4)
 2. [Arquitetura](#arquitetura)
-3. [Repositórios](#repositórios)
+3. [Organização do repositório](#organização-do-repositório)
 4. [Decisões da Fase 4](#decisões-da-fase-4)
 5. [Subindo na Azure (AKS)](#subindo-na-azure-aks)
 6. [CI/CD com GitHub Actions](#cicd-com-github-actions)
@@ -35,7 +35,7 @@ Repositório central da plataforma. Reúne a infraestrutura como código da Azur
 | **Ambiente de produção gerenciado** | AKS provisionado por **Bicep** ([`infra/azure/main.bicep`](infra/azure/main.bicep)), imagens no **ACR** privado (sem usuário admin; o AKS puxa por identidade gerenciada), gateway exposto por **Azure Load Balancer** |
 | **Automação de entrega** | Uma pipeline por serviço (**Build & Test → Imagem com tag versionada → Trivy → Push no ACR → Rolling Update no AKS**, com rollback automático) e uma pipeline da plataforma. Login na Azure por **OIDC**, sem senha guardada |
 | **Performance e latência** | **Elasticsearch** para a busca (fuzzy + relevância), **Redis** na frente das consultas caras, **MongoDB** para dados flexíveis e de alto volume, **PostgreSQL** compartilhado entre as réplicas |
-| **Segurança** | **Zero hardcoded credentials**: os `secret.yaml` com valores saíram dos repositórios; os Secrets do Kubernetes são criados pela pipeline a partir dos GitHub Secrets. MongoDB, Redis, RabbitMQ e Elasticsearch passaram a exigir autenticação |
+| **Segurança** | **Zero hardcoded credentials**: os `secret.yaml` com valores saíram do código; os Secrets do Kubernetes são criados pela pipeline a partir dos GitHub Secrets. MongoDB, Redis, RabbitMQ e Elasticsearch passaram a exigir autenticação |
 
 O que já vinha da Fase 3 e continua: Kong como gateway, a função serverless de notificações, a observabilidade com Prometheus + Grafana, MongoDB e Redis no Catalog.
 
@@ -96,17 +96,19 @@ O que já vinha da Fase 3 e continua: Kong como gateway, a função serverless d
 
 ---
 
-## Repositórios
+## Organização do repositório
 
-| Repositório | Conteúdo | Pipeline |
+Os cinco projetos vivem no mesmo repositório (monorepo), um por pasta, com o histórico de cada um preservado.
+
+| Pasta | Conteúdo | Pipeline |
 |---|---|---|
-| [`fcg-platform`](https://github.com/VHMoschini/fcg-platform) | **Este.** Bicep da Azure, manifestos da infra, Kong, Prometheus/Grafana, scripts de segredos | `platform-deploy.yml` |
-| [`fcg-users-api`](https://github.com/VHMoschini/fcg-users-api) | Cadastro, autenticação e emissão de JWT | `ci-cd.yml` |
-| [`fcg-catalog-api`](https://github.com/VHMoschini/fcg-catalog-api) | Catálogo, busca avançada, avaliações e biblioteca | `ci-cd.yml` |
-| [`fcg-payments-api`](https://github.com/VHMoschini/fcg-payments-api) | Simulação de pagamento | `ci-cd.yml` |
-| [`fcg-notifications-function`](https://github.com/VHMoschini/fcg-notifications-function) | Notificações como Azure Function | `ci-cd.yml` |
+| [`fcg-platform`](../fcg-platform/) | **Esta.** Bicep da Azure, manifestos da infra, Kong, Prometheus/Grafana, scripts de segredos | [`platform.yml`](../.github/workflows/platform.yml) |
+| [`fcg-users-api`](../fcg-users-api/) | Cadastro, autenticação e emissão de JWT | [`users-api.yml`](../.github/workflows/users-api.yml) |
+| [`fcg-catalog-api`](../fcg-catalog-api/) | Catálogo, busca avançada, avaliações e biblioteca | [`catalog-api.yml`](../.github/workflows/catalog-api.yml) |
+| [`fcg-payments-api`](../fcg-payments-api/) | Simulação de pagamento | [`payments-api.yml`](../.github/workflows/payments-api.yml) |
+| [`fcg-notifications-function`](../fcg-notifications-function/) | Notificações como Azure Function | [`notifications-function.yml`](../.github/workflows/notifications-function.yml) |
 
-Cada serviço é dono do próprio código, dos próprios manifestos (`k8s/` com `kustomization.yaml`) e da própria pipeline. Este repositório cuida do que é compartilhado.
+Cada serviço é dono do próprio código, dos próprios manifestos (`k8s/` com `kustomization.yaml`) e da própria pipeline. Cada pipeline só dispara quando a pasta dela muda (filtro `paths`), então um push na Catalog API não reconstrói a Users API. Esta pasta cuida do que é compartilhado.
 
 ```
 fcg-platform/
@@ -118,8 +120,7 @@ fcg-platform/
 │  └─ secrets/             create-secrets.sh (pipeline) e create-secrets.ps1 (local)
 ├─ gateway/kong.yml        Configuração declarativa do Kong (compose e Kubernetes)
 ├─ observability/          prometheus.yml e dashboard do Grafana
-├─ fase4/                  Relatório de entrega e roteiro do vídeo
-└─ .github/workflows/      platform-deploy.yml
+└─ fase4/                  Relatório de entrega e roteiro do vídeo
 ```
 
 ---
@@ -133,7 +134,7 @@ fcg-platform/
 | **Registry** | **ACR** Basic, `adminUserEnabled: false` | O AKS puxa as imagens pela identidade gerenciada (role `AcrPull`); a pipeline publica por OIDC (role `AcrPush`). Nenhuma senha de registry existe |
 | **Exposição** | **Service `type: LoadBalancer` no Kong** | O Kong já é o gateway (roteamento, JWT, rate limit); colocar um Ingress Controller na frente dele seria um segundo proxy fazendo o mesmo papel. O AKS provisiona o Azure Load Balancer e o IP público |
 | **IaC** | **Bicep** + manifestos K8s com **Kustomize** | Bicep é a linguagem nativa da Azure. Kustomize troca a imagem por commit sem template nem `sed` |
-| **CI/CD** | **GitHub Actions** | Os repositórios já estão no GitHub; OIDC com a Azure é nativo |
+| **CI/CD** | **GitHub Actions** | O código já está no GitHub; OIDC com a Azure é nativo |
 | **Autenticação da pipeline** | **OIDC (federated credentials)** | Cada execução recebe um token de curta duração; não há client secret para vazar ou expirar |
 | **Versionamento de imagem** | `<run>-<sha7>` (ex.: `42-a1b2c3d`) + `latest` | Tag imutável por commit: dá para saber exatamente o que está em produção e voltar para uma versão identificável |
 | **Security scan** | **Trivy** (imagem oficial, versão fixa) | Lista CVEs HIGH/CRITICAL com correção disponível. Por padrão só relata; `TRIVY_EXIT_CODE=1` faz bloquear |
@@ -153,7 +154,7 @@ fcg-platform/
 | Ferramenta | Para quê |
 |---|---|
 | Azure CLI (`az login`) | Criar a infra e a identidade da pipeline |
-| GitHub CLI (`gh auth login`) com admin nos repositórios | Gravar Secrets e Variables |
+| GitHub CLI (`gh auth login`) com admin no repositório | Gravar Secrets e Variables |
 | kubectl | Acompanhar o cluster |
 | PowerShell 7+ | Rodar o `setup-azure.ps1` |
 
@@ -169,16 +170,16 @@ O script:
 
 1. cria o resource group e aplica o [`main.bicep`](infra/azure/main.bicep) — ACR, AKS e Container Insights, mais a permissão `AcrPull` dos nós do AKS sobre o ACR;
 2. configura o `kubectl` local para o cluster;
-3. cria a identidade `fcg-github-actions` com **federated credentials** para cada repositório (`repo:VHMoschini/<repo>:ref:refs/heads/main`) e as roles mínimas: `AcrPush` no ACR, `Azure Kubernetes Service Cluster User Role` no AKS e `Reader` no resource group;
-4. gera senhas aleatórias e grava os **GitHub Secrets e Variables** de todos os repositórios. As senhas ficam também em `infra/azure/.secrets.local.json` (no `.gitignore`) para consulta durante a demonstração.
+3. cria a identidade `fcg-github-actions` com uma **federated credential** para a branch principal do repositório (`repo:LMXSS/TC4:ref:refs/heads/main`) e as roles mínimas: `AcrPush` no ACR, `Azure Kubernetes Service Cluster User Role` no AKS e `Reader` no resource group;
+4. gera senhas aleatórias e grava os **GitHub Secrets e Variables** do repositório. As senhas ficam também em `infra/azure/.secrets.local.json` (no `.gitignore`) para consulta durante a demonstração.
 
 ### 2. Plataforma
 
-No GitHub: **fcg-platform → Actions → Platform deploy → Run workflow**. A pipeline cria os Secrets do Kubernetes, sobe PostgreSQL, MongoDB, Redis, Elasticsearch, RabbitMQ, Kong e a observabilidade.
+No GitHub: **Actions → Platform deploy → Run workflow**. A pipeline cria os Secrets do Kubernetes, sobe PostgreSQL, MongoDB, Redis, Elasticsearch, RabbitMQ, Kong e a observabilidade.
 
 ### 3. Serviços
 
-Em cada repositório de serviço: **Actions → CI/CD → Run workflow** (ou qualquer push na branch principal). Cada pipeline publica a imagem no ACR e faz o rolling update no AKS.
+**Actions → CI/CD - Users API / Catalog API / Payments API / Notifications Function → Run workflow** (ou qualquer push na `main` que mexa na pasta do serviço). Cada pipeline publica a imagem no ACR e faz o rolling update no AKS.
 
 ### 4. Acesso
 
@@ -210,7 +211,7 @@ No portal da Azure: **resource group `rg-fcg` → `fcg-aks` → Workloads / Insi
 
 ## CI/CD com GitHub Actions
 
-### Pipeline de cada serviço — `.github/workflows/ci-cd.yml`
+### Pipeline de cada serviço — `.github/workflows/<serviço>.yml`
 
 ```
 push na main
@@ -233,7 +234,7 @@ Em **pull request** roda Build & Test e o build/scan da imagem, sem push e sem d
 | Catalog API | Montagem da consulta do Elasticsearch (fuzzy, pesos, filtros, ordenação), cliente HTTP do Elasticsearch (handler falso), serviço de busca com cache e fallback, indexador, cache distribuído, entidade `Jogo` |
 | Payments API / Função | Build e imagem (sem testes nesta fase) |
 
-### Pipeline da plataforma — `.github/workflows/platform-deploy.yml`
+### Pipeline da plataforma — `.github/workflows/platform.yml`
 
 Valida a sintaxe dos manifestos e **reprova se algum manifesto voltar a ter `kind: Secret`**. Depois cria os Secrets, os ConfigMaps gerados (`kong.yml`, dashboard) e aplica bancos, busca, mensageria, gateway, observabilidade e HPAs, aguardando cada rollout.
 
@@ -319,7 +320,7 @@ O índice do Elasticsearch junta os dois: dados do PostgreSQL + texto rico do Mo
 
 ## Busca avançada com Elasticsearch
 
-Detalhes no [README da Catalog API](https://github.com/VHMoschini/fcg-catalog-api#busca-avançada-elasticsearch). Resumo:
+Detalhes no [README da Catalog API](../fcg-catalog-api/README.md#busca-avançada-elasticsearch). Resumo:
 
 | Item | Como |
 |---|---|
@@ -436,7 +437,7 @@ Métricas novas da Catalog API: `fcg_catalog_search_requests_total{engine}`, `fc
 
 ## Função serverless
 
-A notificação por e-mail é uma **Azure Function** .NET 8 isolated acionada por `RabbitMQTrigger` (repositório `fcg-notifications-function`), rodando como pod no AKS ao lado do Azurite, que faz o papel da storage do host. Na Fase 4 o manifesto dela foi para o próprio repositório, junto da pipeline que gera a imagem.
+A notificação por e-mail é uma **Azure Function** .NET 8 isolated acionada por `RabbitMQTrigger` (pasta `fcg-notifications-function`), rodando como pod no AKS ao lado do Azurite, que faz o papel da storage do host. Na Fase 4 o manifesto dela foi para o próprio repositório, junto da pipeline que gera a imagem.
 
 | Função | Fila | Ação |
 |---|---|---|

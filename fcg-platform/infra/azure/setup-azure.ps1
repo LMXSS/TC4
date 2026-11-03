@@ -6,38 +6,33 @@
   1. Cria o resource group e aplica o main.bicep (ACR + AKS + Container Insights).
   2. Baixa as credenciais do cluster para o kubectl local.
   3. Cria uma identidade para o GitHub Actions com federacao OIDC — sem client secret:
-     cada repositorio troca o token da propria execucao por um token da Azure.
-     Permissoes minimas: AcrPush no ACR, Cluster User no AKS, Reader no resource group.
-  4. Gera senhas aleatorias e grava tudo como GitHub Secrets / Variables nos repositorios.
+     as pipelines da branch main do repositorio trocam o token da propria execucao por
+     um token da Azure. Permissoes minimas: AcrPush no ACR, Cluster User no AKS, Reader
+     no resource group.
+  4. Gera senhas aleatorias e grava tudo como GitHub Secrets / Variables do repositorio.
      As senhas tambem ficam em infra/azure/.secrets.local.json (fora do git) para voce
      consultar a senha do admin e do Grafana durante a demonstracao.
 
   Pre-requisitos: Azure CLI (az login feito), GitHub CLI (gh auth login feito) com
-  permissao de admin nos repositorios, e PowerShell 7+.
+  permissao de admin no repositorio, e PowerShell 7+.
 
 .EXAMPLE
   .\setup-azure.ps1
-  .\setup-azure.ps1 -Location brazilsouth -GithubOwner meu-usuario
+  .\setup-azure.ps1 -Location brazilsouth -GithubRepo outro-usuario/TC4
   .\setup-azure.ps1 -SkipGithub      # so a parte da Azure
 #>
 param(
     [string]$ResourceGroup = "rg-fcg",
     [string]$Location = "eastus",
     [string]$NomeBase = "fcg",
-    [string]$GithubOwner = "VHMoschini",
+    [string]$GithubRepo = "LMXSS/TC4",
     [switch]$SkipGithub
 )
 
 $ErrorActionPreference = "Stop"
 
-# Repositorio -> branch que dispara o deploy.
-$repos = [ordered]@{
-    "fcg-platform"               = "main"
-    "fcg-users-api"              = "main"
-    "fcg-catalog-api"            = "main"
-    "fcg-payments-api"           = "main"
-    "fcg-notifications-function" = "master"
-}
+# Monorepo: as cinco pipelines vivem no mesmo repositorio e fazem deploy a partir da main.
+$branch = "main"
 
 function Step($texto) { Write-Host ""; Write-Host ">> $texto" -ForegroundColor Cyan }
 
@@ -93,21 +88,20 @@ if (-not $spId) {
 }
 
 $existentes = az ad app federated-credential list --id $appId --query "[].name" -o tsv
-foreach ($repo in $repos.Keys) {
-    $nome = "$repo-$($repos[$repo])"
-    if ($existentes -contains $nome) { continue }
+$nome = ($GithubRepo -replace "[^A-Za-z0-9-]", "-") + "-$branch"
+if ($existentes -notcontains $nome) {
     $cred = @{
         name      = $nome
         issuer    = "https://token.actions.githubusercontent.com"
-        subject   = "repo:$GithubOwner/${repo}:ref:refs/heads/$($repos[$repo])"
+        subject   = "repo:${GithubRepo}:ref:refs/heads/$branch"
         audiences = @("api://AzureADTokenExchange")
     } | ConvertTo-Json -Compress
     $arquivo = New-TemporaryFile
     Set-Content -Path $arquivo -Value $cred -Encoding utf8
     az ad app federated-credential create --id $appId --parameters "@$arquivo" --output none
     Remove-Item $arquivo
-    Write-Host "  federacao: $GithubOwner/$repo ($($repos[$repo]))"
 }
+Write-Host "  federacao: $GithubRepo ($branch)"
 
 $rgId = az group show --name $ResourceGroup --query id -o tsv
 $acrId = az acr show --name $acrName --query id -o tsv
@@ -145,28 +139,24 @@ if (Test-Path $arquivoSenhas) {
     Write-Host "  geradas e salvas em $arquivoSenhas (no .gitignore)"
 }
 
-Step "GitHub Secrets e Variables"
-foreach ($repo in $repos.Keys) {
-    $alvo = "$GithubOwner/$repo"
-    gh secret set AZURE_CLIENT_ID       --repo $alvo --body $appId
-    gh secret set AZURE_TENANT_ID       --repo $alvo --body $conta.tenantId
-    gh secret set AZURE_SUBSCRIPTION_ID --repo $alvo --body $conta.id
-    gh variable set ACR_NAME            --repo $alvo --body $acrName
-    gh variable set AKS_RESOURCE_GROUP  --repo $alvo --body $ResourceGroup
-    gh variable set AKS_CLUSTER_NAME    --repo $alvo --body $aksName
-    Write-Host "  $alvo"
-}
+Step "GitHub Secrets e Variables em $GithubRepo"
+gh secret set AZURE_CLIENT_ID       --repo $GithubRepo --body $appId
+gh secret set AZURE_TENANT_ID       --repo $GithubRepo --body $conta.tenantId
+gh secret set AZURE_SUBSCRIPTION_ID --repo $GithubRepo --body $conta.id
+gh variable set ACR_NAME            --repo $GithubRepo --body $acrName
+gh variable set AKS_RESOURCE_GROUP  --repo $GithubRepo --body $ResourceGroup
+gh variable set AKS_CLUSTER_NAME    --repo $GithubRepo --body $aksName
 
-# As senhas so vao para o fcg-platform: e a pipeline dele que cria os Secrets do Kubernetes.
+# Senhas da plataforma: usadas pela pipeline "Platform deploy" para criar os Secrets do Kubernetes.
 foreach ($nome in $senhas.Keys) {
-    gh secret set $nome --repo "$GithubOwner/fcg-platform" --body $senhas[$nome]
+    gh secret set $nome --repo $GithubRepo --body $senhas[$nome]
 }
-Write-Host "  senhas gravadas em $GithubOwner/fcg-platform"
+Write-Host "  Azure (OIDC), registry, cluster e $($senhas.Count) senhas gravados"
 
 Write-Host ""
 Write-Host "Pronto. Proximos passos:" -ForegroundColor Green
-Write-Host "  1. Rode o workflow 'Platform deploy' no fcg-platform (Actions > Run workflow)."
-Write-Host "  2. Faca push (ou Run workflow) em cada API para publicar as imagens."
+Write-Host "  1. GitHub > Actions > 'Platform deploy' > Run workflow."
+Write-Host "  2. GitHub > Actions > cada 'CI/CD - ...' > Run workflow (publica as imagens e faz o deploy)."
 Write-Host "  3. IP publico do gateway: kubectl get svc kong-proxy"
 Write-Host "  Admin da FCG: admin@fcg.local / $($senhas.SEED_ADMIN_PASSWORD)"
 Write-Host "  Grafana:      admin / $($senhas.GRAFANA_PASSWORD)  (kubectl port-forward svc/grafana 3000:3000)"
