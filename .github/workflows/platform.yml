@@ -81,7 +81,8 @@ jobs:
   deploy:
     name: Deploy da plataforma
     needs: validate
-    if: github.event_name != 'pull_request'
+    # Sem AKS_CLUSTER_NAME a Azure ainda nao foi configurada (setup-azure.ps1): so valida.
+    if: github.event_name != 'pull_request' && vars.AKS_CLUSTER_NAME != ''
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
