@@ -1,0 +1,15 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "nomeBase": { "value": "fcgnotif" },
+    "rabbitMqConnection": { "value": "amqps://usuario:senha@meu-rabbit.exemplo.com:5671/" },
+    "filaUserCreated": { "value": "notifications-user-created" },
+    "filaPaymentProcessed": { "value": "notifications-payment-processed" },
+    "smtpHost": { "value": "smtp.exemplo.com" },
+    "smtpPort": { "value": 587 },
+    "smtpUserName": { "value": "apikey" },
+    "smtpPassword": { "value": "TROQUE_ESTE_VALOR" },
+    "smtpFromAddress": { "value": "noreply@fcg.local" }
+  }
+}

@@ -1,0 +1,27 @@
+# Build
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+publish/
+*.user
+*.suo
+.vs/
+.vscode/
+.idea/
+
+# SQLite local
+*.db
+*.db-shm
+*.db-wal
+
+# Segredos / ambiente
+.env
+*.env.local
+appsettings.Local.json
+
+# Azure Functions
+local.settings.json
+.azure/
+bin
+obj
+appsettings.json

@@ -1,0 +1,9 @@
+.git*
+.vscode
+.idea
+local.settings.json
+infra/
+test/
+**/bin/Debug
+**/obj
+Dockerfile
