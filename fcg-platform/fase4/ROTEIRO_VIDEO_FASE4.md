@@ -18,7 +18,7 @@
 
 1. Cluster de pé e pipelines verdes (`setup-azure.ps1` rodado, **Platform deploy** e as quatro **CI/CD** executadas ao menos uma vez).
 2. Se o cluster estava parado: `az aks start --resource-group rg-fcg --name fcg-aks` (≈ 5 min) e confira `kubectl get pods`.
-3. Num terminal PowerShell, na pasta `fcg-platform`, prepare as variáveis:
+3. Num terminal PowerShell, na pasta `TC4\fcg-platform`, prepare as variáveis:
 
 ```powershell
 $GW = "http://$(kubectl get svc kong-proxy -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
@@ -46,7 +46,7 @@ foreach ($j in $jogos) {
 }
 ```
 
-5. Abas abertas: portal da Azure no resource group `rg-fcg`; GitHub do `fcg-catalog-api` na aba **Actions**; VS Code com o `fcg-catalog-api`; Grafana (`kubectl port-forward svc/grafana 3000:3000`, senha em `$senhas.GRAFANA_PASSWORD`).
+5. Abas abertas: portal da Azure no resource group `rg-fcg`; GitHub do `LMXSS/TC4` na aba **Actions**; VS Code com o repositório TC4 aberto; Grafana (`kubectl port-forward svc/grafana 3000:3000`, senha em `$senhas.GRAFANA_PASSWORD`).
 
 ---
 
@@ -177,7 +177,7 @@ while ($true) {
 
 2. Num **terceiro terminal**: `kubectl get pods -l app=catalog-api -w`
 
-3. No VS Code, em `Catalog.Api/Controllers/InfoController.cs`, troque a versão:
+3. No VS Code, em `fcg-catalog-api/Catalog.Api/Controllers/InfoController.cs`, troque a versão:
 
 ```csharp
 public const string Versao = "4.1.0";
@@ -186,12 +186,12 @@ public const string Versao = "4.1.0";
 4. Commit e push:
 
 ```powershell
-git add Catalog.Api/Controllers/InfoController.cs
+git add fcg-catalog-api/Catalog.Api/Controllers/InfoController.cs
 git commit -m "feat: catalog-api 4.1.0 (live deploy)"
 git push
 ```
 
-5. GitHub → **Actions**: a execução aparece. Abra e narre cada job enquanto roda:
+5. GitHub → **Actions**: aparece só a execução **CI/CD - Catalog API** (o filtro de pasta não dispara as outras pipelines). Abra e narre cada job enquanto roda:
    * **Build & Test** — compila e roda os testes unitários (mostre o passo de testes com a contagem);
    * **Imagem Docker** — gera a imagem com a tag `<run>-<sha7>`, passa o Trivy (mostre a tabela do scan) e publica no ACR via OIDC;
    * **Deploy no AKS** — `kustomize edit set image` e `kubectl apply -k`, depois `rollout status`.
@@ -220,7 +220,7 @@ kubectl get deployment catalog-api -o jsonpath='{.spec.template.spec.containers[
 **Mostrar.**
 1. `fcg-catalog-api/k8s/deployment.yaml`: as variáveis sensíveis vêm todas de `secretKeyRef`; não há `secret.yaml` no repositório.
 2. `appsettings.json` sem `Jwt:Key` e sem senha.
-3. GitHub → `fcg-platform` → **Settings → Secrets and variables → Actions**: os segredos (valores ocultos).
+3. GitHub → `LMXSS/TC4` → **Settings → Secrets and variables → Actions**: os segredos (valores ocultos).
 4. `k8s/secrets/create-secrets.sh`: lê das variáveis de ambiente e aplica os Secrets no cluster.
 5. A pipeline do platform reprova se algum manifesto tiver `kind: Secret`.
 6. `azure/login` com OIDC: nenhuma credencial da Azure guardada — a Azure confia no token que o GitHub emite para aquele repositório e branch.

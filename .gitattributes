@@ -1,0 +1,5 @@
+# Normaliza quebras de linha no repositorio; scripts shell sempre com LF
+# (rodam no runner Linux da pipeline mesmo quando editados no Windows).
+* text=auto
+*.sh text eol=lf
+*.sln text eol=crlf

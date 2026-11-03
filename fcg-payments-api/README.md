@@ -86,7 +86,7 @@ docker build -t fcg/payments-api:latest . -f Payments.Api/Dockerfile
 
 ## CI/CD (Fase 4)
 
-[`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml): build, imagem versionada, Trivy, push no ACR e rolling update no AKS. Detalhes no [README do fcg-platform](https://github.com/VHMoschini/fcg-platform#cicd-com-github-actions).
+[`.github/workflows/payments-api.yml`](../.github/workflows/payments-api.yml): build, imagem versionada, Trivy, push no ACR e rolling update no AKS. Detalhes no [README do fcg-platform](../fcg-platform/README.md#cicd-com-github-actions).
 
 ## Kubernetes
 
@@ -96,10 +96,10 @@ Manifestos em [`k8s/`](k8s) com Kustomize: `Deployment`, `Service`, `ConfigMap` 
 kubectl apply -k k8s/
 ```
 
-## Repositórios relacionados
+## Serviços relacionados (pastas deste repositório)
 
 | Repositório | Papel |
 |---|---|
-| [`fcg-platform`](https://github.com/VHMoschini/fcg-platform) | Orquestração — comece por aqui |
-| [`fcg-catalog-api`](https://github.com/VHMoschini/fcg-catalog-api) | Publica `OrderPlacedEvent` e consome o resultado |
-| [`fcg-notifications-function`](https://github.com/VHMoschini/fcg-notifications-function) | Consome `PaymentProcessedEvent` e notifica o usuário |
+| [`fcg-platform`](../fcg-platform/) | Orquestração — comece por aqui |
+| [`fcg-catalog-api`](../fcg-catalog-api/) | Publica `OrderPlacedEvent` e consome o resultado |
+| [`fcg-notifications-function`](../fcg-notifications-function/) | Consome `PaymentProcessedEvent` e notifica o usuário |

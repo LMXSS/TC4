@@ -53,7 +53,7 @@ foreach ($c in $candidates) {
 
 if (-not $rootPath) {
     Write-Host "Nao encontrei o codigo-fonte dos servicos." -ForegroundColor Red
-    Write-Host "Clone os 4 repos lado a lado e aponte a pasta que os contem:" -ForegroundColor Yellow
+    Write-Host "Rode a partir do clone do TC4 (as pastas fcg-* ficam lado a lado) ou aponte a pasta:" -ForegroundColor Yellow
     Write-Host "  .\build-images.ps1 -ReposRoot C:\caminho\para\os\repos" -ForegroundColor Gray
     Write-Host "Esperado: <ReposRoot>\fcg-users-api\Users.Api\Dockerfile (e os outros 3)" -ForegroundColor Gray
     exit 1

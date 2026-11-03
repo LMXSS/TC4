@@ -1,0 +1,9 @@
+# Cada pasta tem o seu .gitignore; aqui so o que vale para o repositorio inteiro.
+.vs/
+.vscode/
+.idea/
+*.user
+
+# Senhas geradas pelo setup-azure.ps1 / create-secrets.ps1 — nunca versionar
+.secrets.local.json
+.env
