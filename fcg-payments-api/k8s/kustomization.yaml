@@ -1,0 +1,17 @@
+# Manifestos da payments-api.
+#
+#   kubectl apply -k k8s/
+#
+# A pipeline (.github/workflows/ci-cd.yml) troca a imagem antes de aplicar:
+#   kustomize edit set image payments-api=<acr>.azurecr.io/payments-api:<sha>
+# Localmente vale o padrao abaixo, a imagem gerada pelo build-images.ps1.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - configmap.yaml
+  - deployment.yaml
+  - service.yaml
+images:
+  - name: payments-api
+    newName: fcg/payments-api
+    newTag: latest

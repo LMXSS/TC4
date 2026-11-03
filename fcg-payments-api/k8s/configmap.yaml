@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: payments-api-config
+  labels:
+    app: payments-api
+data:
+  ASPNETCORE_ENVIRONMENT: "Production"
+  ASPNETCORE_URLS: "http://+:8080"
+  RabbitMq__Host: "rabbitmq"
+
+  # Banco relacional compartilhado entre as replicas (k8s/postgres.yaml no fcg-platform).
+  # A connection string, com a senha, vem do Secret.
+  Database__Provider: "Postgres"
+
+  # Random (padrao), AlwaysApprove ou AlwaysReject.
+  Payments__SimulationMode: "Random"
+  Payments__ApprovalRate: "0.92"
+  # Preco que sempre reprova — atalho para demonstrar o fluxo de recusa.
+  Payments__RejectPrices__0: "99.99"
