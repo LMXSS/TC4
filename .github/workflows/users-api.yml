@@ -1,0 +1,190 @@
+# CI/CD da Users API (Fase 4).
+#
+#   push na main ──► Build & Test ──► Imagem (build, scan, push no ACR) ──► Deploy no AKS
+#   pull request    ──► Build & Test ──► Imagem (build e scan, sem push)
+#
+# Autenticacao na Azure por OIDC (azure/login): o GitHub emite um token de curta duracao
+# para esta execucao e a Azure o troca por acesso ao ACR e ao AKS. Nao existe senha nem
+# client secret guardado no repositorio. Configuracao: fcg-platform/infra/azure/setup-azure.ps1.
+#
+# Monorepo: esta pipeline so dispara quando algo muda em fcg-users-api/.
+#
+# Secrets do repositorio:   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
+# Variables do repositorio: ACR_NAME, AKS_RESOURCE_GROUP, AKS_CLUSTER_NAME
+#                           TRIVY_EXIT_CODE (opcional: "1" faz vulnerabilidade CRITICAL/HIGH com
+#                           correcao disponivel reprovar a pipeline; padrao "0", so relata)
+name: CI/CD - Users API
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "fcg-users-api/**"
+      - "!fcg-users-api/**.md"
+      - ".github/workflows/users-api.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "fcg-users-api/**"
+      - ".github/workflows/users-api.yml"
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # token OIDC para o azure/login
+  contents: read
+
+# Um deploy por vez; um push novo nao cancela um rollout em andamento.
+concurrency:
+  group: ci-cd-users-api-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: fcg-users-api
+
+env:
+  SERVICE: users-api
+  SOLUTION: Users.Api.sln
+  DOCKERFILE: Users.Api/Dockerfile
+  DOTNET_VERSION: "8.0.x"
+
+jobs:
+  build-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore
+        run: dotnet restore "$SOLUTION"
+
+      - name: Build
+        run: dotnet build "$SOLUTION" -c Release --no-restore
+
+      - name: Testes unitarios
+        run: |
+          dotnet test "$SOLUTION" -c Release --no-build \
+            --logger "trx;LogFileName=resultados.trx" \
+            --collect:"XPlat Code Coverage" \
+            --results-directory TestResults
+
+      - name: Publicar resultados dos testes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testes-${{ env.SERVICE }}
+          path: fcg-users-api/TestResults
+
+  image:
+    name: Imagem Docker
+    needs: build-test
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Versao da imagem: numero da execucao + commit curto (ex.: 42-a1b2c3d).
+      # Tag imutavel por commit: o Kubernetes sabe exatamente o que esta rodando e o
+      # rollback volta para uma imagem identificavel.
+      - name: Tag da imagem
+        id: meta
+        run: |
+          echo "tag=${{ github.run_number }}-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "image=${{ vars.ACR_NAME }}.azurecr.io/$SERVICE" >> "$GITHUB_OUTPUT"
+
+      - name: Build da imagem
+        run: |
+          docker build \
+            --label org.opencontainers.image.revision=$GITHUB_SHA \
+            --label org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY \
+            -t "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}" \
+            -t "${{ steps.meta.outputs.image }}:latest" \
+            -f "$DOCKERFILE" .
+
+      # Security scan com Trivy (imagem oficial, versao fixa). Lista vulnerabilidades
+      # HIGH e CRITICAL que ja tem correcao publicada.
+      - name: Security scan (Trivy)
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:0.58.1 image \
+            --severity HIGH,CRITICAL --ignore-unfixed --no-progress \
+            --exit-code "${{ vars.TRIVY_EXIT_CODE || '0' }}" \
+            "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
+
+      - name: Login na Azure (OIDC)
+        if: github.event_name != 'pull_request'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Push para o ACR
+        if: github.event_name != 'pull_request'
+        run: |
+          az acr login --name "${{ vars.ACR_NAME }}"
+          docker push "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
+          docker push "${{ steps.meta.outputs.image }}:latest"
+
+  deploy:
+    name: Deploy no AKS
+    needs: image
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login na Azure (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Contexto do cluster
+        uses: azure/aks-set-context@v4
+        with:
+          resource-group: ${{ vars.AKS_RESOURCE_GROUP }}
+          cluster-name: ${{ vars.AKS_CLUSTER_NAME }}
+
+      # O kustomization.yaml aponta para a imagem local (fcg/users-api:latest); aqui ele
+      # passa a apontar para a imagem recem-publicada no ACR, com a tag deste commit.
+      - name: Aplicar manifestos (Rolling Update)
+        working-directory: fcg-users-api/k8s
+        run: |
+          kustomize edit set image "$SERVICE=${{ needs.image.outputs.image }}:${{ needs.image.outputs.tag }}"
+          kubectl apply -k .
+          kubectl annotate deployment "$SERVICE" kubernetes.io/change-cause="${{ github.sha }} (run ${{ github.run_number }})" --overwrite
+
+      # Espera o rollout terminar: pods novos sobem um a um e so substituem os antigos
+      # depois de passar no readinessProbe (maxUnavailable 0 = sem downtime).
+      - name: Aguardar rollout
+        run: kubectl rollout status deployment/"$SERVICE" --timeout=300s
+
+      # Se a versao nova nao ficar saudavel, volta para a anterior automaticamente.
+      - name: Rollback automatico
+        if: failure()
+        run: |
+          kubectl rollout undo deployment/"$SERVICE"
+          kubectl rollout status deployment/"$SERVICE" --timeout=300s
+
+      - name: Resumo
+        if: always()
+        run: |
+          {
+            echo "### $SERVICE"
+            echo ""
+            echo "Imagem: \`${{ needs.image.outputs.image }}:${{ needs.image.outputs.tag }}\`"
+            echo ""
+            echo '```'
+            kubectl get pods -l app="$SERVICE" -o wide
+            echo ""
+            kubectl rollout history deployment/"$SERVICE" | tail -n 5
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
