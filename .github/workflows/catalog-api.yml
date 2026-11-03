@@ -92,11 +92,20 @@ jobs:
       # Versao da imagem: numero da execucao + commit curto (ex.: 42-a1b2c3d).
       # Tag imutavel por commit: o Kubernetes sabe exatamente o que esta rodando e o
       # rollback volta para uma imagem identificavel.
+      # Sem ACR_NAME (Azure ainda nao configurada) a imagem e gerada com nome local e
+      # passa pelo scan, mas push e deploy ficam de fora.
       - name: Tag da imagem
         id: meta
+        env:
+          ACR_NAME: ${{ vars.ACR_NAME }}
         run: |
           echo "tag=${{ github.run_number }}-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-          echo "image=${{ vars.ACR_NAME }}.azurecr.io/$SERVICE" >> "$GITHUB_OUTPUT"
+          if [ -n "$ACR_NAME" ]; then
+            echo "image=$ACR_NAME.azurecr.io/$SERVICE" >> "$GITHUB_OUTPUT"
+          else
+            echo "image=fcg/$SERVICE" >> "$GITHUB_OUTPUT"
+            echo "::notice::ACR_NAME nao definida: imagem gerada localmente, sem push nem deploy. Rode fcg-platform/infra/azure/setup-azure.ps1."
+          fi
 
       - name: Build da imagem
         run: |
@@ -118,7 +127,7 @@ jobs:
             "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
 
       - name: Login na Azure (OIDC)
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && vars.ACR_NAME != ''
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -126,7 +135,7 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Push para o ACR
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && vars.ACR_NAME != ''
         run: |
           az acr login --name "${{ vars.ACR_NAME }}"
           docker push "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
@@ -135,7 +144,7 @@ jobs:
   deploy:
     name: Deploy no AKS
     needs: image
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.ACR_NAME != ''
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
