@@ -1,0 +1,98 @@
+# Elasticsearch — motor da busca avancada do catalogo (Fase 4).
+#
+# No unico, com seguranca habilitada (usuario elastic + senha do Secret elasticsearch-secret)
+# e sem TLS na camada HTTP, porque o trafego fica dentro do cluster: so a Catalog API fala
+# com ele, pelo Service elasticsearch:9200, e nenhum Service o expoe para fora.
+#
+# node.store.allow_mmap=false dispensa o ajuste de vm.max_map_count no host, que exigiria
+# um initContainer privilegiado — algo que nao queremos num cluster gerenciado.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: elasticsearch
+  labels:
+    app: elasticsearch
+spec:
+  serviceName: elasticsearch
+  replicas: 1
+  selector:
+    matchLabels:
+      app: elasticsearch
+  template:
+    metadata:
+      labels:
+        app: elasticsearch
+    spec:
+      securityContext:
+        # O processo do Elasticsearch roda como uid 1000 e precisa escrever no volume.
+        fsGroup: 1000
+      containers:
+        - name: elasticsearch
+          image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+          ports:
+            - containerPort: 9200
+              name: http
+          env:
+            - name: discovery.type
+              value: single-node
+            - name: node.store.allow_mmap
+              value: "false"
+            - name: xpack.security.enabled
+              value: "true"
+            - name: xpack.security.http.ssl.enabled
+              value: "false"
+            - name: xpack.security.transport.ssl.enabled
+              value: "false"
+            - name: ES_JAVA_OPTS
+              value: "-Xms512m -Xmx512m"
+            - name: ELASTIC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: elasticsearch-secret
+                  key: password
+          volumeMounts:
+            - name: data
+              mountPath: /usr/share/elasticsearch/data
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - curl -sf -u "elastic:${ELASTIC_PASSWORD}" "http://127.0.0.1:9200/_cluster/health?wait_for_status=yellow&timeout=5s"
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 8
+            failureThreshold: 12
+          livenessProbe:
+            tcpSocket:
+              port: 9200
+            initialDelaySeconds: 90
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 250m
+              memory: 1Gi
+            limits:
+              memory: 1536Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch
+  labels:
+    app: elasticsearch
+spec:
+  selector:
+    app: elasticsearch
+  ports:
+    - name: http
+      port: 9200
+      targetPort: 9200

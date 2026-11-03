@@ -1,0 +1,130 @@
+# Kong API Gateway em modo DB-less.
+#
+# A configuracao declarativa (rotas, servicos e politicas) vem do ConfigMap
+# kong-declarative, gerado a partir de gateway/kong.yml — o mesmo arquivo usado pelo
+# docker-compose, para que o comportamento local e o do cluster nao divirjam.
+#
+# Gere ou atualize o ConfigMap com:
+#   kubectl create configmap kong-declarative --from-file=kong.yml=gateway/kong.yml --dry-run=client -o yaml | kubectl apply -f -
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kong
+  labels:
+    app: kong
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: kong
+  template:
+    metadata:
+      labels:
+        app: kong
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8100"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: kong
+          image: kong:3.8
+          env:
+            - name: KONG_DATABASE
+              value: "off"
+            - name: KONG_DECLARATIVE_CONFIG
+              value: /kong/declarative/kong.yml
+            - name: KONG_PROXY_LISTEN
+              value: 0.0.0.0:8000
+            - name: KONG_ADMIN_LISTEN
+              value: 0.0.0.0:8001
+            - name: KONG_STATUS_LISTEN
+              value: 0.0.0.0:8100
+            - name: KONG_PROXY_ACCESS_LOG
+              value: /dev/stdout
+            - name: KONG_PROXY_ERROR_LOG
+              value: /dev/stderr
+            - name: KONG_ADMIN_ACCESS_LOG
+              value: /dev/stdout
+            - name: KONG_ADMIN_ERROR_LOG
+              value: /dev/stderr
+            - name: KONG_LOG_LEVEL
+              value: notice
+            # Resolvida por {vault://env/fcg-jwt-key} dentro do kong.yml.
+            - name: FCG_JWT_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: kong-secret
+                  key: fcg-jwt-key
+          ports:
+            - containerPort: 8000
+              name: proxy
+            - containerPort: 8001
+              name: admin
+            - containerPort: 8100
+              name: status
+          volumeMounts:
+            - name: declarative
+              mountPath: /kong/declarative
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /status
+              port: 8100
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /status
+              port: 8100
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 768Mi
+      volumes:
+        - name: declarative
+          configMap:
+            name: kong-declarative
+---
+# Porta de entrada da plataforma (Fase 4).
+#
+# type: LoadBalancer — no AKS o cloud controller provisiona um Azure Load Balancer com IP
+# publico e o liga a este Service; e o unico ponto do cluster exposto a internet. O IP sai
+# em: kubectl get svc kong-proxy. No Docker Desktop o mesmo Service responde em localhost.
+apiVersion: v1
+kind: Service
+metadata:
+  name: kong-proxy
+  labels:
+    app: kong
+spec:
+  type: LoadBalancer
+  selector:
+    app: kong
+  ports:
+    - name: proxy
+      port: 80
+      targetPort: 8000
+---
+# Admin API e endpoint de metricas: apenas dentro do cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: kong
+  labels:
+    app: kong
+spec:
+  selector:
+    app: kong
+  ports:
+    - name: admin
+      port: 8001
+      targetPort: 8001
+    - name: status
+      port: 8100
+      targetPort: 8100

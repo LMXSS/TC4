@@ -1,0 +1,88 @@
+# PostgreSQL — banco relacional compartilhado das APIs em producao (Fase 4).
+#
+# Na Fase 3 cada pod tinha um SQLite em emptyDir: cada replica enxergava um banco
+# diferente e todo rolling update apagava os dados. Aqui as replicas de Users, Catalog
+# e Payments apontam para o mesmo PostgreSQL, com volume persistente (Azure Disk no AKS).
+# Cada servico usa o seu proprio database (fcg_users, fcg_catalog, fcg_payments), criado
+# pela propria API no primeiro start.
+#
+# A senha vem do Secret postgres-secret, criado pela pipeline a partir dos GitHub Secrets
+# (k8s/secrets/create-secrets.sh) — nenhuma credencial fica neste arquivo.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  labels:
+    app: postgres
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+              name: postgres
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: username
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: password
+            # O disco do AKS vem com lost+found na raiz; o PostgreSQL exige diretorio vazio.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -h 127.0.0.1"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -h 127.0.0.1"]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 768Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels:
+    app: postgres
+spec:
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432

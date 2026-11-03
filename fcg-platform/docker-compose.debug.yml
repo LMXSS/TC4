@@ -1,0 +1,29 @@
+# Override de depuracao: publica as portas dos microsservicos direto no host.
+#
+# Use apenas para inspecionar o Swagger ou o /metrics de um servico isolado.
+# A stack padrao mantem tudo fechado de proposito — o Kong e a unica porta de entrada.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.debug.yml up
+#
+# | Serviço      | Swagger                          | Métricas                         |
+# |--------------|----------------------------------|----------------------------------|
+# | Users API    | http://localhost:5101/swagger    | http://localhost:5101/metrics    |
+# | Catalog API  | http://localhost:5102/swagger    | http://localhost:5102/metrics    |
+# | Payments API | http://localhost:5103/swagger    | http://localhost:5103/metrics    |
+
+services:
+  users-api:
+    ports:
+      - "5101:8080"
+
+  catalog-api:
+    ports:
+      - "5102:8080"
+
+  payments-api:
+    ports:
+      - "5103:8080"
+
+  kong:
+    ports:
+      - "8100:8100"
