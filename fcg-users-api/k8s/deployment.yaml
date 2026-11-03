@@ -1,0 +1,95 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: users-api
+  labels:
+    app: users-api
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  # Rolling update sem downtime: sobe um pod novo por vez (maxSurge 1) e so derruba um
+  # antigo depois que o novo passa no readinessProbe (maxUnavailable 0). Se a imagem nova
+  # nao ficar pronta, o rollout para e os pods antigos continuam atendendo.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: users-api
+  template:
+    metadata:
+      labels:
+        app: users-api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: users-api
+          # Nome logico: o kustomization.yaml troca pelo registry e pela tag certos
+          # (fcg/users-api:latest localmente; <acr>.azurecr.io/users-api:<sha> na pipeline).
+          image: users-api
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          envFrom:
+            - configMapRef:
+                name: users-api-config
+          # Credenciais injetadas em tempo de execucao a partir do Secret users-api-secret,
+          # criado pela pipeline do fcg-platform com os GitHub Secrets. Nenhum valor aqui.
+          env:
+            - name: Jwt__Key
+              valueFrom:
+                secretKeyRef:
+                  name: users-api-secret
+                  key: jwt-key
+            - name: ConnectionStrings__DefaultConnection
+              valueFrom:
+                secretKeyRef:
+                  name: users-api-secret
+                  key: connection-string
+            - name: RabbitMq__Username
+              valueFrom:
+                secretKeyRef:
+                  name: users-api-secret
+                  key: rabbitmq-username
+            - name: RabbitMq__Password
+              valueFrom:
+                secretKeyRef:
+                  name: users-api-secret
+                  key: rabbitmq-password
+            - name: Seed__AdminPassword
+              valueFrom:
+                secretKeyRef:
+                  name: users-api-secret
+                  key: seed-admin-password
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          # Da tempo ao Service de tirar o pod do balanceamento antes do SIGTERM, para que
+          # nenhuma requisicao em voo caia durante o rolling update.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 160Mi
+            limits:
+              memory: 512Mi
