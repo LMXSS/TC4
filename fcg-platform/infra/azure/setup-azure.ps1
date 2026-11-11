@@ -75,6 +75,11 @@ $acrName = $deploy.acrName.value
 $aksName = $deploy.aksName.value
 Write-Host "ACR: $acrName  |  AKS: $aksName" -ForegroundColor Green
 
+# O Bicep ja da AcrPull a identidade dos nos, mas a atribuicao pode nao propagar a tempo
+# (visto na assinatura Azure for Students: pull com 401). O attach-acr garante e e idempotente.
+Step "Permissao AcrPull dos nos do AKS no ACR"
+az aks update --resource-group $ResourceGroup --name $aksName --attach-acr $acrName --output none
+
 # ---------------------------------------------------------------- 2. kubectl
 Step "Credenciais do cluster para o kubectl"
 az aks get-credentials --resource-group $ResourceGroup --name $aksName --overwrite-existing
