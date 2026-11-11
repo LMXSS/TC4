@@ -93,13 +93,19 @@ spec:
           lifecycle:
             postStart:
               exec:
-                # O hook roda junto com o boot: "await_startup" falha na hora se a VM Erlang
-                # ainda nao responde (nao espera). Por isso tenta por ate ~4 min antes de
-                # importar as filas e bindings.
+                # O hook roda como root, em paralelo com o boot do servidor (usuario rabbitmq).
+                # 1) Espera o SERVIDOR criar o .erlang.cookie: se o rabbitmqctl rodasse antes,
+                #    criaria o cookie como root e o servidor morreria com "eacces" ao le-lo.
+                # 2) "await_startup" falha na hora se a VM Erlang ainda nao responde, entao
+                #    tenta por ate ~4 min antes de importar as filas e bindings.
                 command:
                   - sh
                   - -c
                   - |
+                    for i in $(seq 1 60); do
+                      [ -s /var/lib/rabbitmq/.erlang.cookie ] && break
+                      sleep 2
+                    done
                     for i in $(seq 1 48); do
                       rabbitmqctl -q await_startup --timeout 10 >/dev/null 2>&1 && break
                       sleep 5
