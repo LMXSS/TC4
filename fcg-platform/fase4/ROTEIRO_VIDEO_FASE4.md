@@ -1,24 +1,28 @@
 # Roteiro do vídeo "Pitch Final" — Tech Challenge Fase 4
 
-**Duração alvo: 22 minutos** (limite de 25). Cada bloco diz o que falar e o que mostrar. Os quatro itens obrigatórios do enunciado estão marcados com ★.
+**Duração alvo: 24 minutos** (limite de 25 — o minuto de folga absorve a espera da pipeline). Cada bloco diz o que falar e o que mostrar. Os quatro itens obrigatórios do enunciado estão marcados com ★.
 
-| Bloco | Tema | Tempo |
-|---|---|---|
-| 1 | Abertura: os três gargalos | 1:30 |
-| 2 | ★ Infraestrutura na Azure (portal + pods) | 4:00 |
-| 3 | ★ Busca avançada com Elasticsearch | 4:00 |
-| 4 | ★ NoSQL na arquitetura e ★ impacto do cache | 4:00 |
-| 5 | ★ Live Deploy pela pipeline | 6:00 |
-| 6 | Segurança: zero credenciais | 2:00 |
-| 7 | Fechamento | 0:30 |
+| Bloco | Tema | Tempo | Acumulado |
+|---|---|---|---|
+| 1 | Abertura: os três gargalos | 1:30 | 1:30 |
+| 2 | ★ Infraestrutura na Azure (portal + pods) | 4:30 | 6:00 |
+| 3 | ★ Busca avançada com Elasticsearch | 4:00 | 10:00 |
+| 4 | ★ NoSQL na arquitetura e ★ impacto do cache | 4:30 | 14:30 |
+| 5 | ★ Live Deploy pela pipeline | 6:00 | 20:30 |
+| 6 | Segurança: zero credenciais | 2:00 | 22:30 |
+| 7 | Decisões de arquitetura e custo | 1:00 | 23:30 |
+| 8 | Fechamento | 0:30 | 24:00 |
+
+**Ambiente usado:** assinatura **Azure for Students**, região **Chile Central**, AKS (tier Free) com 2 nós **Standard_B2as_v2** (2 vCPU AMD, 8 GB cada), ACR Basic, resource group `rg-fcg`.
 
 ---
 
 ## Antes de gravar
 
 1. Cluster de pé e pipelines verdes (`setup-azure.ps1` rodado, **Platform deploy** e as quatro **CI/CD** executadas ao menos uma vez).
-2. Se o cluster estava parado: `az aks start --resource-group rg-fcg --name fcg-aks` (≈ 5 min) e confira `kubectl get pods`.
-3. Num terminal PowerShell, na pasta `TC4\fcg-platform`, prepare as variáveis:
+2. Se o cluster estava parado: `az aks start --resource-group rg-fcg --name fcg-aks` (≈ 5 min) e confira `kubectl get pods` — todos `Running`/`Ready`. Ligue o cluster uns 20 minutos antes de gravar.
+3. **Ensaie o Live Deploy uma vez** (Bloco 5) e anote quanto a pipeline leva do push ao `rollout status` verde. Se passar de ~5 min, deixe o push para o começo do bloco e preencha a espera narrando os jobs.
+4. Num terminal **PowerShell 7** (`pwsh`), na pasta `TC4\fcg-platform`, prepare as variáveis:
 
 ```powershell
 $GW = "http://$(kubectl get svc kong-proxy -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
@@ -28,7 +32,7 @@ $login = Invoke-RestMethod "$GW/api/auth/login" -Method Post -ContentType 'appli
 $admin = @{ Authorization = "Bearer $($login.token)" }
 ```
 
-4. Cadastre alguns jogos para a busca ter o que mostrar (rode uma vez antes; no vídeo você cadastra só o último):
+5. Cadastre alguns jogos para a busca ter o que mostrar (rode uma vez antes; no vídeo você cadastra só o último):
 
 ```powershell
 $jogos = @(
@@ -46,7 +50,8 @@ foreach ($j in $jogos) {
 }
 ```
 
-5. Abas abertas: portal da Azure no resource group `rg-fcg`; GitHub do `LMXSS/TC4` na aba **Actions**; VS Code com o repositório TC4 aberto; Grafana (`kubectl port-forward svc/grafana 3000:3000`, senha em `$senhas.GRAFANA_PASSWORD`).
+6. Abas abertas: portal da Azure no resource group `rg-fcg`; GitHub do `LMXSS/TC4` na aba **Actions**; VS Code com o repositório TC4 aberto; Grafana (`kubectl port-forward svc/grafana 3000:3000`, senha em `$senhas.GRAFANA_PASSWORD`).
+7. Gravação: tela cheia, fonte do terminal e do VS Code em 16–18 pt, notificações do Windows desligadas. Grave em blocos se preferir e junte no editor — o limite é a duração final.
 
 ---
 
@@ -60,14 +65,14 @@ foreach ($j in $jogos) {
 
 ## Bloco 2 — ★ Infraestrutura na Azure (4:00)
 
-**Falar.** Toda a infra é código. O Bicep cria o registry privado, o cluster gerenciado e o monitoramento, e dá aos nós do AKS permissão de puxar imagens do ACR pela identidade gerenciada — não existe senha de registry.
+**Falar.** Toda a infra é código. Um único script, o `setup-azure.ps1`, aplica o Bicep — que cria o registry privado e o cluster Kubernetes gerenciado e dá aos nós do AKS permissão de puxar imagens do ACR pela identidade gerenciada, sem senha de registry — e depois configura o GitHub: identidade da pipeline, secrets e variables. Rodar de novo é seguro; ele só ajusta o que falta.
 
 **Mostrar.**
-1. `infra/azure/main.bicep` rapidamente: ACR com `adminUserEnabled: false`, AKS, role `AcrPull`.
-2. **Portal → `rg-fcg`**: os recursos (AKS, ACR, Log Analytics, e o resource group `MC_` com VMs, discos, Load Balancer e IP público).
-3. **AKS → Node pools**: 2 nós B2ms. **Workloads**: os Deployments e StatefulSets. **Insights**: CPU e memória por nó.
+1. `infra/azure/main.bicep` rapidamente: ACR com `adminUserEnabled: false`, AKS no tier Free, role `AcrPull` para a identidade dos nós.
+2. **Portal → `rg-fcg`**: AKS, ACR e a identidade `fcg-github-actions`. Depois o resource group `MC_rg-fcg_fcg-aks_chilecentral`, que o próprio AKS gerencia: VMs dos nós, discos, Load Balancer e IP público.
+3. **AKS → Pools de nós**: 2 nós `Standard_B2as_v2`. **Cargas de trabalho**: os Deployments e StatefulSets, com os pods de cada um. **Serviços e entradas**: o `kong-proxy` com o IP externo.
 4. **ACR → Repositories → catalog-api**: as tags `<run>-<sha7>`, uma por commit.
-5. No terminal:
+5. No terminal — a mesma visão, agora pelo `kubectl`:
 
 ```powershell
 kubectl get nodes -o wide
@@ -76,7 +81,7 @@ kubectl get svc kong-proxy        # EXTERNAL-IP do Azure Load Balancer
 kubectl get hpa
 ```
 
-**Falar.** O único ponto exposto à internet é o Kong, por um Service do tipo LoadBalancer — o AKS criou o Azure Load Balancer e o IP público sozinho. Banco relacional e Elasticsearch são StatefulSets com Azure Disk; as APIs escalam por HPA. Trocamos o SQLite por PostgreSQL: com SQLite dentro do pod, cada réplica tinha um banco diferente e o rolling update apagava os dados.
+**Falar.** O único ponto exposto à internet é o Kong, por um Service do tipo LoadBalancer — o AKS criou o Azure Load Balancer e o IP público sozinho. Banco relacional, MongoDB, Redis e Elasticsearch são StatefulSets com Azure Disk, então os dados sobrevivem ao restart do pod; as APIs escalam por HPA. Trocamos o SQLite por PostgreSQL: com SQLite dentro do pod, cada réplica tinha um banco diferente e o rolling update apagava os dados.
 
 ---
 
@@ -154,6 +159,8 @@ Mostrar `GameDetailsDocument` (campos livres, `Dictionary` de requisitos) e o pi
 }
 ```
 
+**Falar.** Os números vêm do Prometheus, que coleta as métricas das APIs dentro do cluster.
+
 Painéis: **Acerto do cache (Redis)**, **Cache: acertos × faltas**, e o bloco novo **Busca avançada** (buscas por motor, duração p95 no Elasticsearch, indexações).
 
 ---
@@ -223,7 +230,7 @@ kubectl get deployment catalog-api -o jsonpath='{.spec.template.spec.containers[
 3. GitHub → `LMXSS/TC4` → **Settings → Secrets and variables → Actions**: os segredos (valores ocultos).
 4. `k8s/secrets/create-secrets.sh`: lê das variáveis de ambiente e aplica os Secrets no cluster.
 5. A pipeline do platform reprova se algum manifesto tiver `kind: Secret`.
-6. `azure/login` com OIDC: nenhuma credencial da Azure guardada — a Azure confia no token que o GitHub emite para aquele repositório e branch.
+6. `azure/login` com OIDC: nenhuma credencial da Azure guardada. **Portal → `fcg-github-actions` → Credenciais federadas**: a identidade só aceita o token que o GitHub emite para o repositório `LMXSS/TC4` na branch `main`. Os três secrets `AZURE_*` são só identificadores, não senhas. E a identidade tem o mínimo: `AcrPush` no registry, `Cluster User` no AKS e `Reader` no resource group.
 
 ```powershell
 kubectl get secrets
@@ -232,7 +239,19 @@ kubectl describe secret catalog-api-secret     # mostra as chaves, nunca os valo
 
 ---
 
-## Bloco 7 — Fechamento (0:30)
+## Bloco 7 — Decisões de arquitetura e custo (1:00)
+
+**Falar.** Três decisões que valem explicar:
+
+1. **Bancos e Elasticsearch dentro do cluster.** Tudo roda como StatefulSet com disco gerenciado, em vez de serviços PaaS. Assim a plataforma inteira sobe com um comando e cabe no crédito de estudante. E o código não depende disso: endereço e credenciais vêm de configuração e Secret, então trocar por um Elastic Cloud ou Azure Cache for Redis é só mudar a connection string.
+2. **Nós burstable pequenos.** Dois `B2as_v2` dão conta da carga da demonstração e custam uma fração de uma VM de uso geral. O HPA escala as APIs dentro deles.
+3. **Custo controlado.** O cluster fica parado fora do uso (`az aks stop`), e o controle de gasto pelo portal mostra quanto a fase consumiu.
+
+**Mostrar.** Portal → **Gerenciamento de Custos → Análise de custo** do `rg-fcg`, com o valor gasto até aqui.
+
+---
+
+## Bloco 8 — Fechamento (0:30)
 
 **Falar.** A FCG agora roda num Kubernetes gerenciado na Azure, com imagens privadas, deploy contínuo sem downtime a cada push, busca tolerante a erro com Elasticsearch, cache no Redis, MongoDB para os dados flexíveis, PostgreSQL compartilhado entre as réplicas, e nenhuma credencial fora do lugar. Obrigado.
 
@@ -243,4 +262,10 @@ kubectl describe secret catalog-api-secret     # mostra as chaves, nunca os valo
 ```powershell
 # Volte a versão (ou mantenha 4.1.0 — a main reflete produção de qualquer forma)
 az aks stop --resource-group rg-fcg --name fcg-aks     # para de cobrar pelos nós
+```
+
+Depois da nota publicada, apague tudo para não consumir mais crédito:
+
+```powershell
+az group delete --name rg-fcg --yes
 ```

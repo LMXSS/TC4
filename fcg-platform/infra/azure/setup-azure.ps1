@@ -5,13 +5,16 @@
 .DESCRIPTION
   1. Cria o resource group e aplica o main.bicep (ACR + AKS + Container Insights).
   2. Baixa as credenciais do cluster para o kubectl local.
-  3. Cria uma identidade para o GitHub Actions com federacao OIDC — sem client secret:
+  3. Cria uma identidade gerenciada para o GitHub Actions com federacao OIDC — sem client secret:
      as pipelines da branch main do repositorio trocam o token da propria execucao por
      um token da Azure. Permissoes minimas: AcrPush no ACR, Cluster User no AKS, Reader
      no resource group.
   4. Gera senhas aleatorias e grava tudo como GitHub Secrets / Variables do repositorio.
      As senhas tambem ficam em infra/azure/.secrets.local.json (fora do git) para voce
      consultar a senha do admin e do Grafana durante a demonstracao.
+
+  Assinaturas Azure for Students so aceitam algumas regioes; descubra quais com:
+    az policy assignment list --disable-scope-strict-match --query "[].parameters.listOfAllowedLocations.value" -o json
 
   Pre-requisitos: Azure CLI (az login feito), GitHub CLI (gh auth login feito) com
   permissao de admin no repositorio, e PowerShell 7+.
@@ -20,16 +23,23 @@
   .\setup-azure.ps1
   .\setup-azure.ps1 -Location brazilsouth -GithubRepo outro-usuario/TC4
   .\setup-azure.ps1 -SkipGithub      # so a parte da Azure
+  .\setup-azure.ps1 -Monitoramento   # liga o Container Insights (cobra por GB de log)
 #>
 param(
     [string]$ResourceGroup = "rg-fcg",
-    [string]$Location = "eastus",
+    [string]$Location = "chilecentral",
     [string]$NomeBase = "fcg",
     [string]$GithubRepo = "LMXSS/TC4",
+    # Container Insights cobra por GB de log ingerido. Desligado por padrao para poupar o
+    # credito do Azure for Students; os pods continuam visiveis no portal (AKS > Workloads).
+    [switch]$Monitoramento,
     [switch]$SkipGithub
 )
 
 $ErrorActionPreference = "Stop"
+# Faz az/gh/kubectl com exit code != 0 interromperem o script (PowerShell 7.3+), em vez
+# de seguir adiante com variaveis vazias.
+$PSNativeCommandUseErrorActionPreference = $true
 
 # Monorepo: as cinco pipelines vivem no mesmo repositorio e fazem deploy a partir da main.
 $branch = "main"
@@ -58,7 +68,7 @@ Step "Aplicando main.bicep (ACR + AKS). Leva de 5 a 10 minutos..."
 $deploy = az deployment group create `
     --resource-group $ResourceGroup `
     --template-file (Join-Path $PSScriptRoot "main.bicep") `
-    --parameters nomeBase=$NomeBase `
+    --parameters nomeBase=$NomeBase habilitarMonitoramento=$($Monitoramento.IsPresent.ToString().ToLower()) `
     --query properties.outputs | ConvertFrom-Json
 
 $acrName = $deploy.acrName.value
@@ -77,31 +87,38 @@ if ($SkipGithub) {
 
 # ---------------------------------------------------------------- 3. OIDC
 Step "Identidade do GitHub Actions (OIDC, sem client secret)"
-$appName = "$NomeBase-github-actions"
-$appId = az ad app list --display-name $appName --query "[0].appId" -o tsv
-if (-not $appId) {
-    $appId = az ad app create --display-name $appName --query appId -o tsv
-}
-$spId = az ad sp list --filter "appId eq '$appId'" --query "[0].id" -o tsv
-if (-not $spId) {
-    $spId = az ad sp create --id $appId --query id -o tsv
-}
+# Identidade gerenciada (user-assigned) com credencial federada para o GitHub: o
+# azure/login troca o token OIDC da execucao por um token desta identidade. Criar a
+# identidade so exige permissao na assinatura (Azure RBAC), nao no Entra ID — funciona
+# tambem em contas de estudante/convidadas, que nao podem registrar aplicativos.
+$idName = "$NomeBase-github-actions"
+$identidade = az identity create --name $idName --resource-group $ResourceGroup --location $Location | ConvertFrom-Json
+$appId = $identidade.clientId
+$spId = $identidade.principalId
 
-$existentes = az ad app federated-credential list --id $appId --query "[].name" -o tsv
-$nome = ($GithubRepo -replace "[^A-Za-z0-9-]", "-") + "-$branch"
-if ($existentes -notcontains $nome) {
-    $cred = @{
-        name      = $nome
-        issuer    = "https://token.actions.githubusercontent.com"
-        subject   = "repo:${GithubRepo}:ref:refs/heads/$branch"
-        audiences = @("api://AzureADTokenExchange")
-    } | ConvertTo-Json -Compress
-    $arquivo = New-TemporaryFile
-    Set-Content -Path $arquivo -Value $cred -Encoding utf8
-    az ad app federated-credential create --id $appId --parameters "@$arquivo" --output none
-    Remove-Item $arquivo
+# O subject do token OIDC do GitHub pode vir em dois formatos, conforme a configuracao
+# do repositorio/organizacao: o classico (repo:dono/repo:ref:...) e o com IDs imutaveis
+# (repo:dono@<id>/repo@<id>:ref:...). Cria uma credencial federada para cada um.
+$repoInfo = gh api "repos/$GithubRepo" | ConvertFrom-Json
+$dono, $repoNome = $GithubRepo.Split("/")
+$subjects = [ordered]@{
+    (($GithubRepo -replace "[^A-Za-z0-9-]", "-") + "-$branch")     = "repo:${GithubRepo}:ref:refs/heads/$branch"
+    (($GithubRepo -replace "[^A-Za-z0-9-]", "-") + "-$branch-ids") = "repo:${dono}@$($repoInfo.owner.id)/${repoNome}@$($repoInfo.id):ref:refs/heads/$branch"
 }
-Write-Host "  federacao: $GithubRepo ($branch)"
+$existentes = az identity federated-credential list --identity-name $idName --resource-group $ResourceGroup --query "[].name" -o tsv
+foreach ($nome in $subjects.Keys) {
+    if ($existentes -notcontains $nome) {
+        az identity federated-credential create `
+            --name $nome `
+            --identity-name $idName `
+            --resource-group $ResourceGroup `
+            --issuer "https://token.actions.githubusercontent.com" `
+            --subject $subjects[$nome] `
+            --audiences "api://AzureADTokenExchange" `
+            --output none
+    }
+}
+Write-Host "  identidade: $idName  |  federacao: $GithubRepo ($branch)"
 
 $rgId = az group show --name $ResourceGroup --query id -o tsv
 $acrId = az acr show --name $acrName --query id -o tsv
@@ -111,8 +128,18 @@ foreach ($atribuicao in @(
         @{ Role = "Reader"; Scope = $rgId },
         @{ Role = "AcrPush"; Scope = $acrId },
         @{ Role = "Azure Kubernetes Service Cluster User Role"; Scope = $aksId })) {
-    az role assignment create --assignee-object-id $spId --assignee-principal-type ServicePrincipal `
-        --role $atribuicao.Role --scope $atribuicao.Scope --output none 2>$null
+    # Identidade recem-criada pode levar alguns segundos para replicar: tenta ate 6 vezes.
+    $ok = $false
+    for ($tentativa = 1; $tentativa -le 6 -and -not $ok; $tentativa++) {
+        try {
+            az role assignment create --assignee-object-id $spId --assignee-principal-type ServicePrincipal `
+                --role $atribuicao.Role --scope $atribuicao.Scope --output none
+            $ok = $true
+        } catch {
+            if ($tentativa -eq 6) { throw }
+            Start-Sleep -Seconds 10
+        }
+    }
     Write-Host "  role: $($atribuicao.Role)"
 }
 

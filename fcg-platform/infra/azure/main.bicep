@@ -17,8 +17,8 @@ param nomeBase string = 'fcg'
 @description('Regiao dos recursos.')
 param localizacao string = resourceGroup().location
 
-@description('Tamanho das VMs dos nos. B2ms (2 vCPU, 8 GB) comporta Elasticsearch, bancos e APIs com folga.')
-param tamanhoNo string = 'Standard_B2ms'
+@description('Tamanho das VMs dos nos. B2as_v2 (2 vCPU AMD x64, 8 GB, burstable) comporta Elasticsearch, bancos e APIs. Em assinaturas Azure for Students, Chile Central e a regiao permitida em que o AKS aceita esse tamanho com cota disponivel (familia Basv2).')
+param tamanhoNo string = 'Standard_B2as_v2'
 
 @description('Quantidade de nos do pool.')
 @minValue(1)

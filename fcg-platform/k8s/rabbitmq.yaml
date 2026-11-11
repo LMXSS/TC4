@@ -93,10 +93,18 @@ spec:
           lifecycle:
             postStart:
               exec:
+                # O hook roda junto com o boot: "await_startup" falha na hora se a VM Erlang
+                # ainda nao responde (nao espera). Por isso tenta por ate ~4 min antes de
+                # importar as filas e bindings.
                 command:
                   - sh
                   - -c
-                  - rabbitmqctl await_startup --timeout 180 && rabbitmqctl import_definitions /etc/rabbitmq/definitions.json
+                  - |
+                    for i in $(seq 1 48); do
+                      rabbitmqctl -q await_startup --timeout 10 >/dev/null 2>&1 && break
+                      sleep 5
+                    done
+                    rabbitmqctl import_definitions /etc/rabbitmq/definitions.json
           volumeMounts:
             - name: config
               mountPath: /etc/rabbitmq/rabbitmq.conf
