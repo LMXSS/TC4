@@ -30,11 +30,18 @@ spec:
       containers:
         - name: kong
           image: kong:3.8
+          # Igual ao docker-compose: o kong.yml versionado so tem o marcador
+          # __FCG_JWT_KEY__; antes de iniciar, ele e trocado pela chave real (Secret
+          # kong-secret) numa copia em /tmp, que e a que o Kong le.
+          command:
+            - /bin/sh
+            - -c
+            - sed "s|__FCG_JWT_KEY__|$FCG_JWT_KEY|g" /kong/declarative/kong.yml > /tmp/kong.yml && exec /docker-entrypoint.sh kong docker-start
           env:
             - name: KONG_DATABASE
               value: "off"
             - name: KONG_DECLARATIVE_CONFIG
-              value: /kong/declarative/kong.yml
+              value: /tmp/kong.yml
             - name: KONG_PROXY_LISTEN
               value: 0.0.0.0:8000
             - name: KONG_ADMIN_LISTEN
@@ -51,7 +58,7 @@ spec:
               value: /dev/stderr
             - name: KONG_LOG_LEVEL
               value: notice
-            # Resolvida por {vault://env/fcg-jwt-key} dentro do kong.yml.
+            # Substitui o marcador __FCG_JWT_KEY__ do kong.yml (ver command acima).
             - name: FCG_JWT_KEY
               valueFrom:
                 secretKeyRef:
