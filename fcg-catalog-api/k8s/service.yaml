@@ -6,5 +6,8 @@ spec:
   selector:
     app: catalog-api
   ports:
-    - port: 80
+    # Mesma porta do container e do docker-compose: o Kong e o Prometheus chamam
+    # <servico>:8080 nos dois ambientes.
+    - name: http
+      port: 8080
       targetPort: 8080
